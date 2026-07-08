@@ -56,7 +56,8 @@
       {
         "provider": "github",
         "owner": "hypnos1450",
-        "repo": "Grok-App"
+        "repo": "Grok-App",
+        "releaseType": "release"
       }
     ],
     "afterSign": "build/notarize.cjs",
