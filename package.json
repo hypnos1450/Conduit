@@ -52,8 +52,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "YOUR_GITHUB_OWNER",
-        "repo": "grok-harness"
+        "owner": "hypnos1450",
+        "repo": "Grok-App"
       }
     ],
     "afterSign": "build/notarize.cjs",
