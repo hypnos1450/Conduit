@@ -127,7 +127,13 @@ function AssistantView({ item }: { item: Extract<ChatItem, { kind: 'assistant' }
                     {children}
                   </code>
                 )
-              }
+              },
+              // Tables scroll horizontally instead of breaking the column width.
+              table: ({ children }) => (
+                <div className="md-table-wrap">
+                  <table>{children}</table>
+                </div>
+              )
             }}
           >
             {item.text}
@@ -165,18 +171,38 @@ function hostOf(url: string): string {
   }
 }
 
+/** A small glyph per tool family. Plain unicode keeps it dependency-free. */
+function toolIcon(name: string): string {
+  if (name === 'bash') return '❯_'
+  if (name === 'read_file') return '◫'
+  if (name === 'write_file' || name === 'edit_file') return '✎'
+  if (name === 'list_dir') return '🗀'
+  if (name === 'glob' || name === 'grep') return '⌕'
+  if (name === 'fetch_page') return '🌐'
+  if (name === 'update_plan') return '☑'
+  if (name === 'memory' || name === 'skill') return '◈'
+  if (name === 'session_search') return '⌕'
+  if (name === 'spawn_agent') return '⚇'
+  if (name.startsWith('mcp__')) return '⧉'
+  return '•'
+}
+
 function ToolCard({ item }: { item: Extract<ChatItem, { kind: 'tool' }> }): JSX.Element {
   const [open, setOpen] = useState(false)
   const summary = summarize(item)
+  const displayName = item.name.startsWith('mcp__') ? item.name.split('__').slice(1).join(':') : item.name
   return (
-    <div className="tool-card">
+    <div className={`tool-card ${item.status}`}>
       <button className="tool-card-header" onClick={() => setOpen((v) => !v)}>
-        <span className={`tool-status ${item.status}`} />
-        <span className="tool-name">{item.name}</span>
+        <span className={`tool-icon ${item.status}`} aria-hidden>
+          {toolIcon(item.name)}
+        </span>
+        <span className="tool-name">{displayName}</span>
         <span className="tool-summary">{summary}</span>
         {typeof item.durationMs === 'number' && (
           <span className="tool-duration">{formatDuration(item.durationMs)}</span>
         )}
+        <span className={`tool-chevron${open ? ' open' : ''}`}>›</span>
       </button>
       {open && (
         <div className="tool-card-body">

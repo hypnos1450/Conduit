@@ -41,6 +41,8 @@ export interface Settings {
   mcpServers: McpServerConfig[]
   /** Opt in to automatic update checks */
   autoUpdate: boolean
+  /** System notifications when a run finishes or needs approval while unfocused */
+  notifications: boolean
 }
 
 export interface McpServerConfig {
@@ -63,7 +65,8 @@ export const DEFAULT_SETTINGS: Settings = {
   globalAllowlist: [],
   enableSubagents: true,
   mcpServers: [],
-  autoUpdate: true
+  autoUpdate: true,
+  notifications: true
 }
 
 /** Current on-disk schema version for sessions and settings. */
@@ -193,6 +196,12 @@ export interface PendingSkillWrite {
   description?: string
   content?: string
   source: 'auto' | 'agent'
+}
+
+export interface CommandMeta {
+  name: string
+  description: string
+  builtin: boolean
 }
 
 export interface SkillImportReport {
@@ -362,6 +371,14 @@ export interface HarnessApi {
   files: {
     suggest(sessionId: string, query: string): Promise<string[]>
   }
+  commands: {
+    /** Built-in + user-defined slash commands */
+    list(): Promise<CommandMeta[]>
+    /** Expand "/name args" into the full prompt (null = unknown command) */
+    resolve(name: string, args: string): Promise<string | null>
+    /** Open the custom-commands folder in the file manager */
+    openFolder(): Promise<void>
+  }
   panels: {
     /** List a directory (relative to the session cwd) for the Files panel */
     listDir(sessionId: string, rel: string): Promise<FileEntry[]>
@@ -390,6 +407,10 @@ export interface HarnessApi {
     onDownloaded(cb: (info: UpdateInfo) => void): () => void
   }
   onMenuAction(cb: (action: string) => void): () => void
+  /** Host platform ('darwin' | 'win32' | 'linux') */
+  platform: string
+  /** Absolute filesystem path of a dropped/selected File ('' if unavailable) */
+  pathForFile(file: File): string
   revealLogs(): Promise<void>
   pickFolder(): Promise<string | null>
   openExternal(url: string): Promise<void>

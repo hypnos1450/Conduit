@@ -173,8 +173,12 @@ function highlight(code: string, ext: string): string {
 
 function PreviewPanel(props: { sessionId: string; file: string | null; version: number }): JSX.Element {
   const [data, setData] = useState<FilePreview | null>(null)
+  // Scripts in previewed HTML are opt-in: heavy/hostile pages can take down
+  // the renderer or GPU process, so default to a static render.
+  const [runScripts, setRunScripts] = useState(false)
 
   useEffect(() => {
+    setRunScripts(false)
     if (!props.file) {
       setData(null)
       return
@@ -188,10 +192,20 @@ function PreviewPanel(props: { sessionId: string; file: string | null; version: 
   if (!data) return <div className="dock-empty">Loading…</div>
 
   const ext = props.file.split('.').pop()?.toLowerCase() ?? ''
+  const isHtml = ext === 'html' || ext === 'htm'
   return (
     <div className="preview-wrap">
       <div className="preview-path" title={props.file}>
-        {props.file}
+        <span className="preview-path-text">{props.file}</span>
+        {isHtml && data.kind === 'text' && (
+          <button
+            className={`mini-btn${runScripts ? ' danger' : ''}`}
+            title={runScripts ? 'Reload without scripts' : 'Run the page with scripts enabled'}
+            onClick={() => setRunScripts((v) => !v)}
+          >
+            {runScripts ? 'scripts: on' : 'scripts: off'}
+          </button>
+        )}
       </div>
       {data.kind === 'error' && <div className="dock-empty">{data.message}</div>}
       {data.kind === 'binary' && <div className="dock-empty">Binary file ({Math.round(data.size / 1024)} KB)</div>}
@@ -204,8 +218,14 @@ function PreviewPanel(props: { sessionId: string; file: string | null; version: 
         </div>
       )}
       {data.kind === 'text' &&
-        (ext === 'html' || ext === 'htm' ? (
-          <iframe className="preview-frame" sandbox="allow-scripts" srcDoc={data.content} title={props.file} />
+        (isHtml ? (
+          <iframe
+            key={runScripts ? 'js' : 'static'}
+            className="preview-frame"
+            sandbox={runScripts ? 'allow-scripts' : ''}
+            srcDoc={data.content}
+            title={props.file}
+          />
         ) : ext === 'md' || ext === 'markdown' ? (
           <div className="preview-scroll md">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{data.content}</ReactMarkdown>

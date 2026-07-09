@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChatItem,
   CheckpointInfo,
+  CommandMeta,
   GitStatus,
   MODELS,
   ModelId,
@@ -18,6 +19,49 @@ interface Notice {
   message: string
   retryAt?: number
 }
+
+/** The app's spark mark, matching the icon. */
+export function SparkLogo({ size = 28 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden>
+      <defs>
+        <radialGradient id="spark-g" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.35" />
+          <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+      <circle cx="16" cy="16" r="15" fill="url(#spark-g)" />
+      <path
+        d="M16 2 L18 13 L29 16 L18 19 L16 30 L14 19 L3 16 L14 13 Z"
+        fill="var(--accent)"
+      />
+      <path d="M16 7 L17 14.5 L24 16 L17 17.5 L16 25 L15 17.5 L8 16 L15 14.5 Z" fill="#fff" />
+    </svg>
+  )
+}
+
+const STARTERS: { label: string; icon: string; prompt: string }[] = [
+  {
+    icon: '📋',
+    label: 'Map this codebase',
+    prompt: 'Give me a high-level tour of this codebase: what it does, the main directories, and how the pieces fit together.'
+  },
+  {
+    icon: '🐛',
+    label: 'Find & fix a bug',
+    prompt: 'Look through this project for a likely bug or correctness issue, explain it, and propose a fix.'
+  },
+  {
+    icon: '📝',
+    label: 'Set up a project guide',
+    prompt: '/init'
+  },
+  {
+    icon: '✅',
+    label: 'Add tests',
+    prompt: 'Find code in this project that lacks test coverage and add meaningful tests for it.'
+  }
+]
 
 export default function Chat(props: {
   session: SessionMeta | null
@@ -42,6 +86,8 @@ export default function Chat(props: {
   const [files, setFiles] = useState<string[]>([])
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
   const [mention, setMention] = useState<{ query: string; results: string[]; active: number } | null>(null)
+  const [slash, setSlash] = useState<{ results: CommandMeta[]; active: number } | null>(null)
+  const allCommands = useRef<CommandMeta[] | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedToBottom = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -164,14 +210,62 @@ export default function Chat(props: {
     setInput('')
     setRunning(true)
     setNotice(null)
-    void window.harness.agent.send(session.id, text, {
-      images: images.length ? images : undefined,
-      files: files.length ? files : undefined
-    })
+    void (async () => {
+      // Expand a leading slash command (/init, custom templates) into its prompt.
+      let finalText = text
+      const cmd = /^\/([a-z0-9-]+)\s?([\s\S]*)$/.exec(text)
+      if (cmd) {
+        const expanded = await window.harness.commands.resolve(cmd[1], cmd[2])
+        if (expanded) finalText = expanded
+      }
+      await window.harness.agent.send(session.id, finalText, {
+        images: images.length ? images : undefined,
+        files: files.length ? files : undefined
+      })
+    })()
     setImages([])
     setFiles([])
     setMention(null)
+    setSlash(null)
   }, [session, running, input, images, files])
+
+  const updateSlash = useCallback((value: string) => {
+    const m = /^\/([a-z0-9-]*)$/.exec(value)
+    if (!m) {
+      setSlash(null)
+      return
+    }
+    const apply = (cmds: CommandMeta[]): void => {
+      const results = cmds.filter((c) => c.name.startsWith(m[1]))
+      setSlash(results.length ? { results, active: 0 } : null)
+    }
+    if (allCommands.current) apply(allCommands.current)
+    else
+      void window.harness.commands.list().then((cmds) => {
+        allCommands.current = cmds
+        apply(cmds)
+      })
+  }, [])
+
+  const pickSlash = useCallback((name: string) => {
+    setInput(`/${name} `)
+    setSlash(null)
+    textareaRef.current?.focus()
+  }, [])
+
+  // Welcome-screen starter: drop text into the composer for the user to review/send.
+  const startWith = useCallback((text: string) => {
+    setInput(text)
+    const el = textareaRef.current
+    if (el) {
+      el.focus()
+      requestAnimationFrame(() => {
+        el.style.height = 'auto'
+        el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+        el.setSelectionRange(text.length, text.length)
+      })
+    }
+  }, [])
 
   const updateMention = useCallback(
     (value: string, caret: number) => {
@@ -222,6 +316,38 @@ export default function Chat(props: {
       }
     }
   }, [])
+
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      if (!session) return
+      for (const file of Array.from(e.dataTransfer.files)) {
+        if (file.type.startsWith('image/')) {
+          const reader = new FileReader()
+          reader.onload = () => {
+            if (typeof reader.result === 'string') {
+              setImages((prev) => (prev.length >= 8 ? prev : [...prev, reader.result as string]))
+            }
+          }
+          reader.readAsDataURL(file)
+          continue
+        }
+        const abs = window.harness.pathForFile(file)
+        if (!abs) continue
+        const cwd = session.cwd.endsWith('/') ? session.cwd : `${session.cwd}/`
+        if (abs.startsWith(cwd)) {
+          const rel = abs.slice(cwd.length)
+          setFiles((prev) => (prev.includes(rel) ? prev : [...prev, rel]))
+        } else {
+          setNotice({
+            level: 'info',
+            message: `"${file.name}" is outside this workspace — only workspace files can be attached.`
+          })
+        }
+      }
+    },
+    [session]
+  )
 
   const respondPermission = (allow: boolean, always = false, global = false): void => {
     if (!permission) return
@@ -330,11 +456,30 @@ export default function Chat(props: {
         </div>
       </div>
 
-      <div className="message-scroll" ref={scrollRef} onScroll={onScroll}>
+      <div
+        className="message-scroll"
+        ref={scrollRef}
+        onScroll={onScroll}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={onDrop}
+      >
         {items.length === 0 ? (
-          <div className="empty-state" style={{ height: '100%' }}>
-            <h2>{modelInfo?.label ?? model}</h2>
-            <div>{modelInfo?.blurb}</div>
+          <div className="welcome">
+            <div className="welcome-logo">
+              <SparkLogo size={44} />
+            </div>
+            <h1 className="welcome-title">How can I help?</h1>
+            <div className="welcome-sub">
+              {modelInfo?.label ?? model} · working in <code>{shortPath(session.cwd)}</code>
+            </div>
+            <div className="welcome-cards">
+              {STARTERS.map((s) => (
+                <button key={s.label} className="welcome-card" onClick={() => startWith(s.prompt)}>
+                  <span className="welcome-card-icon">{s.icon}</span>
+                  <span className="welcome-card-label">{s.label}</span>
+                </button>
+              ))}
+            </div>
           </div>
         ) : (
           <div className="message-column">
@@ -395,7 +540,12 @@ export default function Chat(props: {
             ))}
             {running && !permission && (
               <div className="working-indicator">
-                <span className="working-dot" /> working…
+                <span className="working-dots">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                working…
               </div>
             )}
           </div>
@@ -414,7 +564,10 @@ export default function Chat(props: {
       {permission && (
         <div className="permission-bar">
           <div className="permission-title">
-            Grok wants to run <code>{permission.toolName}</code>
+            <span className="permission-icon">⚠</span>
+            <span>
+              Grok wants to run <code>{permission.toolName}</code>
+            </span>
           </div>
           <div className="permission-cmd">{permission.summary}</div>
           {permission.preview && (
@@ -445,7 +598,7 @@ export default function Chat(props: {
         </div>
       )}
 
-      <div className="composer-wrap">
+      <div className="composer-wrap" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
         <div className="composer">
           {mention && (
             <div className="mention-popup">
@@ -459,6 +612,23 @@ export default function Chat(props: {
                   }}
                 >
                   {f}
+                </button>
+              ))}
+            </div>
+          )}
+          {slash && (
+            <div className="mention-popup">
+              {slash.results.map((c, i) => (
+                <button
+                  key={c.name}
+                  className={`mention-item${i === slash.active ? ' active' : ''}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    pickSlash(c.name)
+                  }}
+                >
+                  /{c.name}
+                  <span style={{ opacity: 0.6, marginLeft: 8 }}>{c.description}</span>
                 </button>
               ))}
             </div>
@@ -491,6 +661,7 @@ export default function Chat(props: {
             onChange={(e) => {
               setInput(e.target.value)
               updateMention(e.target.value, e.target.selectionStart)
+              updateSlash(e.target.value)
               const el = textareaRef.current
               if (el) {
                 el.style.height = 'auto'
@@ -499,6 +670,25 @@ export default function Chat(props: {
             }}
             onPaste={onPaste}
             onKeyDown={(e) => {
+              if (slash) {
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  const delta = e.key === 'ArrowDown' ? 1 : -1
+                  setSlash((s) =>
+                    s ? { ...s, active: (s.active + delta + s.results.length) % s.results.length } : s
+                  )
+                  return
+                }
+                if (e.key === 'Enter' || e.key === 'Tab') {
+                  e.preventDefault()
+                  pickSlash(slash.results[slash.active].name)
+                  return
+                }
+                if (e.key === 'Escape') {
+                  setSlash(null)
+                  return
+                }
+              }
               if (mention) {
                 if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                   e.preventDefault()

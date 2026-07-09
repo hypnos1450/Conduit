@@ -14,7 +14,11 @@ export default function App(): JSX.Element {
   const [showSettings, setShowSettings] = useState(false)
   const [update, setUpdate] = useState<UpdateInfo | null>(null)
   const [switcherOpen, setSwitcherOpen] = useState(false)
+  /** Per-session activity for the sidebar: running / blocked on approval / finished unseen */
+  const [sessionStatus, setSessionStatus] = useState<Record<string, 'running' | 'blocked' | 'done'>>({})
   const chatActions = useRef<{ focusInput?: () => void; exportSession?: () => void }>({})
+  const activeIdRef = useRef<string | null>(null)
+  activeIdRef.current = activeId
 
   const refreshSessions = useCallback(async () => {
     setSessions(await window.harness.sessions.list())
@@ -37,12 +41,46 @@ export default function App(): JSX.Element {
     document.documentElement.dataset.theme = settings.theme === 'system' ? '' : settings.theme
   }, [settings])
 
-  // Keep sidebar titles/usage in sync.
+  // Tag the platform so CSS can enable the translucent (vibrancy) sidebar on macOS.
+  useEffect(() => {
+    document.documentElement.dataset.platform = window.harness.platform
+  }, [])
+
+  // Keep sidebar titles/usage and per-session activity dots in sync.
   useEffect(() => {
     return window.harness.agent.onEvent((ev) => {
       if (ev.type === 'title' || ev.type === 'turn-end') void refreshSessions()
+      if (!('sessionId' in ev)) return
+      const sid = ev.sessionId
+      if (ev.type === 'turn-start') {
+        setSessionStatus((s) => ({ ...s, [sid]: 'running' }))
+      } else if (ev.type === 'permission-request') {
+        setSessionStatus((s) => ({ ...s, [sid]: 'blocked' }))
+      } else if (ev.type === 'item' || ev.type === 'item-update') {
+        // Activity after a permission prompt means it was answered.
+        setSessionStatus((s) => (s[sid] === 'blocked' ? { ...s, [sid]: 'running' } : s))
+      } else if (ev.type === 'turn-end') {
+        setSessionStatus((s) => {
+          const next = { ...s }
+          // Finished in the background → badge until the user views it.
+          if (sid !== activeIdRef.current) next[sid] = 'done'
+          else delete next[sid]
+          return next
+        })
+      }
     })
   }, [refreshSessions])
+
+  // Viewing a session clears its "finished" badge.
+  useEffect(() => {
+    if (!activeId) return
+    setSessionStatus((s) => {
+      if (s[activeId] !== 'done') return s
+      const next = { ...s }
+      delete next[activeId]
+      return next
+    })
+  }, [activeId])
 
   // Update availability.
   useEffect(() => {
@@ -66,6 +104,10 @@ export default function App(): JSX.Element {
   // Native menu actions.
   useEffect(() => {
     return window.harness.onMenuAction((action) => {
+      if (action.startsWith('focus-session:')) {
+        setActiveId(action.slice('focus-session:'.length))
+        return
+      }
       switch (action) {
         case 'new-session':
           void newSession()
@@ -101,6 +143,7 @@ export default function App(): JSX.Element {
       <Sidebar
         sessions={sessions}
         activeId={activeId}
+        status={sessionStatus}
         email={auth.email}
         forceSearchOpen={switcherOpen}
         onSearchOpenChange={setSwitcherOpen}

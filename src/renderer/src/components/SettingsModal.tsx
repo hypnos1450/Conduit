@@ -461,6 +461,23 @@ export default function SettingsModal(props: {
 
               <div className="setting-row">
                 <div>
+                  <div className="setting-label">Notifications</div>
+                  <div className="setting-help">
+                    System notification when a task finishes or needs approval while the app is in
+                    the background
+                  </div>
+                </div>
+                <select
+                  value={props.settings.notifications ? 'on' : 'off'}
+                  onChange={(e) => void update({ notifications: e.target.value === 'on' })}
+                >
+                  <option value="on">on</option>
+                  <option value="off">off</option>
+                </select>
+              </div>
+
+              <div className="setting-row">
+                <div>
                   <div className="setting-label">Theme</div>
                 </div>
                 <select
@@ -522,6 +539,19 @@ export default function SettingsModal(props: {
                   <option value="on">on</option>
                   <option value="off">off</option>
                 </select>
+              </div>
+
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">Custom slash commands</div>
+                  <div className="setting-help">
+                    Prompt templates as .md files — the filename is the command, $ARGUMENTS is
+                    replaced with what you type after it. /init is built in.
+                  </div>
+                </div>
+                <button className="mini-btn" onClick={() => void window.harness.commands.openFolder()}>
+                  Open folder
+                </button>
               </div>
 
               <div className="setting-row">

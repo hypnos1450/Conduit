@@ -1,5 +1,5 @@
 // Typed IPC surface between the renderer and the main process.
-import { BrowserWindow, IpcMainInvokeEvent, app, dialog, ipcMain, shell } from 'electron'
+import { BrowserWindow, IpcMainInvokeEvent, Notification, app, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -20,6 +20,7 @@ import { MemoryTarget, memoryStore } from './agent/memory'
 import { skillStore } from './agent/skills'
 import { importSkillFolder, installFromGitHub } from './agent/skill-install'
 import { listDir, readFilePreview, termManager } from './panels'
+import { ensureCommandsDir, listCommands, resolveCommand } from './commands'
 import { mcpManager } from './agent/mcp'
 import { gitStatus } from './agent/git'
 import { logsDirectory } from './logger'
@@ -57,6 +58,39 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   const emit = (ev: AgentEvent): void => {
     getWindow()?.webContents.send('agent:event', ev)
+    maybeNotify(ev)
+  }
+
+  // System notification when the agent needs the user and the app is in the
+  // background; clicking focuses the window on that session.
+  const maybeNotify = (ev: AgentEvent): void => {
+    if (!settings.notifications || !Notification.isSupported()) return
+    const win = getWindow()
+    if (!win || win.isFocused()) return
+    let title: string | null = null
+    let body = ''
+    if (ev.type === 'permission-request') {
+      title = 'Grok needs approval'
+      body = `${ev.request.toolName}: ${ev.request.summary}`.slice(0, 120)
+    } else if (ev.type === 'turn-end' && (ev.stopReason === 'done' || ev.stopReason === 'error')) {
+      title = ev.stopReason === 'done' ? 'Grok finished a task' : 'Grok hit an error'
+    }
+    if (!title) return
+    const sessionId = 'sessionId' in ev ? ev.sessionId : undefined
+    void (async () => {
+      if (sessionId) {
+        const rec = await sessionStore.load(sessionId).catch(() => null)
+        if (rec && !body) body = rec.meta.title
+      }
+      const n = new Notification({ title, body, silent: false })
+      n.on('click', () => {
+        if (win.isMinimized()) win.restore()
+        win.show()
+        win.focus()
+        if (sessionId) win.webContents.send('menu:action', `focus-session:${sessionId}`)
+      })
+      n.show()
+    })()
   }
 
   // Reject IPC from any frame that isn't our own window (defense in depth for
@@ -306,6 +340,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     if (!rec) return []
     return suggestFiles(rec.meta.cwd, query)
   })
+
+  // ---- slash commands
+  handle('commands:list', () => listCommands())
+  handle('commands:resolve', (_e, name: string, args: string) =>
+    resolveCommand(String(name ?? ''), String(args ?? ''))
+  )
+  handle('commands:openFolder', () => shell.openPath(ensureCommandsDir()))
 
   // ---- right dock panels
   handle('panels:listDir', async (_e, sessionId: string, rel: string) => {

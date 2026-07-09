@@ -1,7 +1,7 @@
 {
   "name": "grok-harness",
   "productName": "Grok Harness",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Desktop agent harness for xAI Grok 4.5 and Grok 4.3, with xAI subscription OAuth",
   "main": "out/main/index.js",
   "author": {
@@ -63,8 +63,14 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
-        "dmg",
-        "zip"
+        {
+          "target": "dmg",
+          "arch": ["arm64", "x64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["arm64", "x64"]
+        }
       ],
       "hardenedRuntime": true,
       "gatekeeperAssess": false,

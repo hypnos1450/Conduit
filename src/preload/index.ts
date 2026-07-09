@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AgentEvent,
   Attachments,
@@ -68,6 +68,11 @@ const api: HarnessApi = {
   files: {
     suggest: (sessionId, query) => ipcRenderer.invoke('files:suggest', sessionId, query)
   },
+  commands: {
+    list: () => ipcRenderer.invoke('commands:list'),
+    resolve: (name: string, args: string) => ipcRenderer.invoke('commands:resolve', name, args),
+    openFolder: () => ipcRenderer.invoke('commands:openFolder')
+  },
   panels: {
     listDir: (sessionId, rel) => ipcRenderer.invoke('panels:listDir', sessionId, rel),
     readFile: (sessionId, rel) => ipcRenderer.invoke('panels:readFile', sessionId, rel)
@@ -109,6 +114,15 @@ const api: HarnessApi = {
     ipcRenderer.on('menu:action', l)
     return () => ipcRenderer.removeListener('menu:action', l)
   },
+  /** Absolute filesystem path of a dropped/selected File (sandbox-safe) */
+  pathForFile: (file: File) => {
+    try {
+      return webUtils.getPathForFile(file)
+    } catch {
+      return ''
+    }
+  },
+  platform: process.platform,
   revealLogs: () => ipcRenderer.invoke('revealLogs'),
   pickFolder: () => ipcRenderer.invoke('pickFolder'),
   openExternal: (url: string) => ipcRenderer.invoke('openExternal', url)

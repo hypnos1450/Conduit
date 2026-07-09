@@ -10,15 +10,20 @@ import { sessionStore } from './sessions'
 let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
+  const isMac = process.platform === 'darwin'
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 900,
     minHeight: 600,
     title: 'Grok Harness',
-    backgroundColor: '#111113',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    trafficLightPosition: { x: 16, y: 16 },
+    // Transparent under the vibrancy layer on macOS; solid elsewhere.
+    backgroundColor: isMac ? '#00000000' : '#111113',
+    titleBarStyle: isMac ? 'hiddenInset' : 'default',
+    trafficLightPosition: { x: 16, y: 18 },
+    // Frosted-glass window behind the translucent sidebar (native Mac feel).
+    vibrancy: isMac ? 'sidebar' : undefined,
+    visualEffectState: isMac ? 'active' : undefined,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -31,6 +36,18 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null
+  })
+
+  // A crashed renderer (e.g. hostile/heavy HTML in the preview iframe) should
+  // come back as a reload, not a dead white window. The timestamp guard stops
+  // a page that crashes on load from turning into a reload loop.
+  let lastRendererReload = 0
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    logger('app').error(`renderer gone: ${details.reason} (exit ${details.exitCode})`)
+    if (details.reason === 'clean-exit') return
+    if (Date.now() - lastRendererReload < 10_000) return
+    lastRendererReload = Date.now()
+    mainWindow?.webContents.reload()
   })
 
   // Open external links in the system browser, never in the app.
@@ -98,3 +115,11 @@ app.on('window-all-closed', () => {
 
 // Don't leave terminal-panel processes running after the app exits.
 app.on('before-quit', () => termManager.killAll())
+
+// GPU/utility process crashes restart automatically — but log them so
+// "the preview went blank" is diagnosable from main.log.
+app.on('child-process-gone', (_event, details) => {
+  if (details.reason !== 'clean-exit') {
+    logger('app').warn(`${details.type} process gone: ${details.reason} (exit ${details.exitCode})`)
+  }
+})
