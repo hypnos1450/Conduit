@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar'
 import Chat from './components/Chat'
 import SettingsModal from './components/SettingsModal'
 import RightDock from './components/RightDock'
+import { XIcon } from './components/Icons'
 
 export default function App(): JSX.Element {
   const [auth, setAuth] = useState<AuthState | null>(null)
@@ -163,8 +164,8 @@ export default function App(): JSX.Element {
             <button className="btn primary" onClick={() => void window.harness.update.install()}>
               Restart to update
             </button>
-            <button className="icon-btn" onClick={() => setUpdate(null)}>
-              ✕
+            <button className="icon-btn" title="Dismiss update notice" onClick={() => setUpdate(null)}>
+              <XIcon size={14} />
             </button>
           </div>
         )}

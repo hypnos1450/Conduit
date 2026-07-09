@@ -11,6 +11,7 @@ import {
   SkillImportReport,
   SkillMeta
 } from '@shared/types'
+import { CheckIcon, XIcon } from './Icons'
 
 const TABS = ['General', 'Agent', 'Memory', 'Skills', 'MCP', 'About'] as const
 type Tab = (typeof TABS)[number]
@@ -63,11 +64,11 @@ function MemorySection({ cwd }: { cwd?: string }): JSX.Element {
                 {p.old_text ? ` (replacing: …${p.old_text}…)` : ''}
               </span>
               <span>
-                <button className="mini-btn" onClick={() => resolve(p.id, true)}>
-                  ✓
+                <button className="mini-btn" title="Approve" onClick={() => resolve(p.id, true)}>
+                  <CheckIcon size={12} strokeWidth={2.2} />
                 </button>
-                <button className="mini-btn danger" onClick={() => resolve(p.id, false)}>
-                  ✕
+                <button className="mini-btn danger" title="Reject" onClick={() => resolve(p.id, false)}>
+                  <XIcon size={12} strokeWidth={2.2} />
                 </button>
               </span>
             </div>
@@ -92,7 +93,7 @@ function MemorySection({ cwd }: { cwd?: string }): JSX.Element {
                   title="Delete this memory"
                   onClick={() => void window.harness.memory.removeEntry(target, e, cwd).then(refresh)}
                 >
-                  ✕
+                  <XIcon size={12} strokeWidth={2.2} />
                 </button>
               </div>
             ))}
@@ -211,11 +212,11 @@ function SkillsSection(): JSX.Element {
                 {p.description ?? ''} {p.content ? `— ${p.content.slice(0, 140)}…` : ''}
               </span>
               <span>
-                <button className="mini-btn" onClick={() => resolve(p.id, true)}>
-                  ✓
+                <button className="mini-btn" title="Approve" onClick={() => resolve(p.id, true)}>
+                  <CheckIcon size={12} strokeWidth={2.2} />
                 </button>
-                <button className="mini-btn danger" onClick={() => resolve(p.id, false)}>
-                  ✕
+                <button className="mini-btn danger" title="Reject" onClick={() => resolve(p.id, false)}>
+                  <XIcon size={12} strokeWidth={2.2} />
                 </button>
               </span>
             </div>
@@ -275,7 +276,7 @@ function SkillsSection(): JSX.Element {
               title="Delete this skill"
               onClick={() => void window.harness.skills.remove(s.name).then(refresh)}
             >
-              ✕
+              <XIcon size={12} strokeWidth={2.2} />
             </button>
           </span>
         </div>
@@ -358,9 +359,10 @@ function McpSection(props: {
               </button>
               <button
                 className="mini-btn danger"
+                title="Remove server"
                 onClick={() => void save(props.settings.mcpServers.filter((s) => s.name !== srv.name))}
               >
-                ✕
+                <XIcon size={12} strokeWidth={2.2} />
               </button>
             </span>
           </div>

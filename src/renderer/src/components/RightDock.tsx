@@ -8,6 +8,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import hljs from 'highlight.js/lib/common'
 import { ChatItem, FileEntry, FilePreview, PlanStep, SessionMeta, ToolStatus } from '@shared/types'
+import { ExpandIcon, RefreshIcon, ShrinkIcon, XIcon } from './Icons'
 
 type PanelId = 'preview' | 'files' | 'tasks' | 'term'
 
@@ -16,7 +17,7 @@ const STORE_KEY = 'dock-open-panels'
 
 const ICONS: Record<PanelId, JSX.Element> = {
   preview: (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.4">
+    <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.4">
       <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
       <path d="M1.5 5.5h13" />
       <circle cx="3.6" cy="4" r="0.5" fill="currentColor" stroke="none" />
@@ -24,18 +25,18 @@ const ICONS: Record<PanelId, JSX.Element> = {
     </svg>
   ),
   files: (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.4">
+    <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.4">
       <path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H8L6.5 3.5h-4a1 1 0 0 0-1 1Z" />
     </svg>
   ),
   tasks: (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.4">
+    <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.4">
       <path d="M2 4.2l1.2 1.2L5.5 3M2 8.7l1.2 1.2L5.5 7.5M2 13.2l1.2 1.2L5.5 12" />
       <path d="M8 4.7h6M8 9.2h6M8 13.7h6" />
     </svg>
   ),
   term: (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.4">
+    <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.4">
       <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
       <path d="M4.5 6l2.5 2-2.5 2M8.5 10.5h3" />
     </svg>
@@ -72,10 +73,10 @@ function Panel(props: {
             title={props.expanded ? 'Restore size' : 'Expand'}
             onClick={props.onToggleExpand}
           >
-            {props.expanded ? '⤡' : '⤢'}
+            {props.expanded ? <ShrinkIcon size={14} /> : <ExpandIcon size={14} />}
           </button>
           <button className="icon-btn" title="Close panel" onClick={props.onClose}>
-            ✕
+            <XIcon size={14} />
           </button>
         </span>
       </div>
@@ -480,7 +481,7 @@ export default function RightDock({ session }: { session: SessionMeta | null }):
       actions={
         id === 'files' ? (
           <button className="icon-btn" title="Refresh" onClick={() => setFilesRefresh((n) => n + 1)}>
-            ↻
+            <RefreshIcon size={14} />
           </button>
         ) : undefined
       }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { SessionMeta } from '@shared/types'
 import { SparkLogo } from './Chat'
+import { GearIcon, PanelLeftIcon, PlusIcon, SearchIcon, XIcon } from './Icons'
 
 /** Bucket sessions into Today / Yesterday / Previous 7 days / Older by updatedAt. */
 function groupSessions(sessions: SessionMeta[]): { label: string; items: SessionMeta[] }[] {
@@ -77,11 +78,11 @@ export default function Sidebar(props: {
           <SparkLogo size={22} />
         </button>
         <button className="rail-icon-btn" title="New session (⌘N)" onClick={props.onNew}>
-          ＋
+          <PlusIcon size={19} />
         </button>
         <div style={{ flex: 1 }} />
         <button className="rail-icon-btn" title="Settings (⌘,)" onClick={props.onOpenSettings}>
-          ⚙
+          <GearIcon size={19} />
         </button>
       </div>
     )
@@ -103,10 +104,10 @@ export default function Sidebar(props: {
               setTimeout(() => searchRef.current?.focus(), 0)
             }}
           >
-            ⌕
+            <SearchIcon />
           </button>
           <button className="icon-btn" title="Collapse sidebar (⌘\\)" onClick={() => setCollapsed(true)}>
-            ⇤
+            <PanelLeftIcon />
           </button>
         </div>
       </div>
@@ -126,7 +127,7 @@ export default function Sidebar(props: {
         />
       )}
       <button className="new-chat-btn" onClick={props.onNew}>
-        <span>＋</span> New session
+        <PlusIcon size={15} /> New session
       </button>
       <div className="session-list">
         {groups.map((group) => (
@@ -161,7 +162,7 @@ export default function Sidebar(props: {
                     props.onDelete(s.id)
                   }}
                 >
-                  ✕
+                  <XIcon size={13} />
                 </span>
               </button>
             ))}
@@ -174,7 +175,7 @@ export default function Sidebar(props: {
           {props.email ?? 'Signed in'}
         </span>
         <button className="icon-btn" title="Settings" onClick={props.onOpenSettings}>
-          ⚙
+          <GearIcon />
         </button>
       </div>
     </div>

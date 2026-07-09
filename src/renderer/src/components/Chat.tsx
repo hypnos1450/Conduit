@@ -13,6 +13,21 @@ import {
   Usage
 } from '@shared/types'
 import ItemView, { DiffView } from './Items'
+import {
+  BookIcon,
+  BugIcon,
+  CompassIcon,
+  FlaskIcon,
+  ForkIcon,
+  PencilIcon,
+  QueueIcon,
+  RefreshIcon,
+  SendIcon,
+  StopIcon,
+  UndoIcon,
+  WarnIcon,
+  XIcon
+} from './Icons'
 
 interface Notice {
   level: 'info' | 'warn' | 'error'
@@ -40,28 +55,41 @@ export function SparkLogo({ size = 28 }: { size?: number }): JSX.Element {
   )
 }
 
-const STARTERS: { label: string; icon: string; prompt: string }[] = [
+const STARTERS: { label: string; desc: string; icon: JSX.Element; prompt: string }[] = [
   {
-    icon: '📋',
+    icon: <CompassIcon size={17} />,
     label: 'Map this codebase',
+    desc: 'A guided tour of the project and how its pieces fit',
     prompt: 'Give me a high-level tour of this codebase: what it does, the main directories, and how the pieces fit together.'
   },
   {
-    icon: '🐛',
+    icon: <BugIcon size={17} />,
     label: 'Find & fix a bug',
+    desc: 'Hunt down a likely bug and propose a fix',
     prompt: 'Look through this project for a likely bug or correctness issue, explain it, and propose a fix.'
   },
   {
-    icon: '📝',
+    icon: <BookIcon size={17} />,
     label: 'Set up a project guide',
+    desc: 'Write a GROK.md the agent reads every session',
     prompt: '/init'
   },
   {
-    icon: '✅',
+    icon: <FlaskIcon size={17} />,
     label: 'Add tests',
+    desc: 'Cover untested code with meaningful tests',
     prompt: 'Find code in this project that lacks test coverage and add meaningful tests for it.'
   }
 ]
+
+/** Time-of-day greeting for the welcome screen. */
+function greeting(): string {
+  const h = new Date().getHours()
+  if (h < 5) return 'Up late?'
+  if (h < 12) return 'Good morning'
+  if (h < 18) return 'Good afternoon'
+  return 'Good evening'
+}
 
 export default function Chat(props: {
   session: SessionMeta | null
@@ -465,20 +493,67 @@ export default function Chat(props: {
       >
         {items.length === 0 ? (
           <div className="welcome">
-            <div className="welcome-logo">
-              <SparkLogo size={44} />
-            </div>
-            <h1 className="welcome-title">How can I help?</h1>
-            <div className="welcome-sub">
-              {modelInfo?.label ?? model} · working in <code>{shortPath(session.cwd)}</code>
-            </div>
-            <div className="welcome-cards">
-              {STARTERS.map((s) => (
-                <button key={s.label} className="welcome-card" onClick={() => startWith(s.prompt)}>
-                  <span className="welcome-card-icon">{s.icon}</span>
-                  <span className="welcome-card-label">{s.label}</span>
-                </button>
-              ))}
+            <div className="welcome-halo" aria-hidden />
+            <div className="welcome-inner">
+              <div className="welcome-logo">
+                <SparkLogo size={52} />
+              </div>
+              <h1 className="welcome-title">{greeting()}</h1>
+              <p className="welcome-sub">What should we build today?</p>
+              <div className="welcome-chips">
+                <span className="welcome-chip accent">
+                  <SparkLogo size={12} />
+                  <span className="welcome-chip-text">{modelInfo?.label ?? model}</span>
+                </span>
+                {git?.branch && (
+                  <span className="welcome-chip" title={`Git branch: ${git.branch}`}>
+                    <ForkIcon size={12} />
+                    <span className="welcome-chip-text">
+                      {git.branch}
+                      {git.dirty ? '*' : ''}
+                    </span>
+                  </span>
+                )}
+                <span className="welcome-chip" title={session.cwd}>
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden>
+                    <path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H8L6.5 3.5h-4a1 1 0 0 0-1 1Z" />
+                  </svg>
+                  <span className="welcome-chip-text">{shortPath(session.cwd)}</span>
+                </span>
+              </div>
+              <div className="welcome-cards">
+                {STARTERS.map((s, i) => (
+                  <button
+                    key={s.label}
+                    className="welcome-card"
+                    style={{ animationDelay: `${0.08 + i * 0.06}s` }}
+                    onClick={() => startWith(s.prompt)}
+                  >
+                    <span className="welcome-card-icon">{s.icon}</span>
+                    <span className="welcome-card-text">
+                      <span className="welcome-card-label">{s.label}</span>
+                      <span className="welcome-card-desc">{s.desc}</span>
+                    </span>
+                    <span className="welcome-card-arrow" aria-hidden>
+                      <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M4 10h11M11.5 5.5L16 10l-4.5 4.5" />
+                      </svg>
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <div className="welcome-hints">
+                <span className="welcome-hint">
+                  <kbd>/</kbd> commands
+                </span>
+                <span className="welcome-hint">
+                  <kbd>@</kbd> attach files
+                </span>
+                <span className="welcome-hint">
+                  <kbd>⌘K</kbd> search sessions
+                </span>
+                <span className="welcome-hint">drag &amp; drop anywhere</span>
+              </div>
             </div>
           </div>
         ) : (
@@ -489,7 +564,7 @@ export default function Chat(props: {
                   <div className="msg-actions">
                     {checkpoints.some((c) => c.itemId === item.id) && (
                       <button className="msg-action" title="Restore files to before this message" onClick={() => restore(item.id)}>
-                        ↺
+                        <UndoIcon size={14} />
                       </button>
                     )}
                     <button
@@ -498,10 +573,10 @@ export default function Chat(props: {
                       disabled={running}
                       onClick={() => setEditing({ id: item.id, text: item.text })}
                     >
-                      ✎
+                      <PencilIcon size={14} />
                     </button>
                     <button className="msg-action" title="Fork session from here" onClick={() => fork(item.id)}>
-                      ⑂
+                      <ForkIcon size={14} />
                     </button>
                   </div>
                 )}
@@ -533,7 +608,7 @@ export default function Chat(props: {
                 )}
                 {item.kind === 'assistant' && item.id === lastAssistantId && !running && (
                   <button className="retry-link" onClick={retry}>
-                    ↻ Regenerate
+                    <RefreshIcon size={13} /> Regenerate
                   </button>
                 )}
               </div>
@@ -555,8 +630,8 @@ export default function Chat(props: {
       {notice && (
         <div className={`notice-bar ${notice.level}`}>
           <span>{notice.message}</span>
-          <button className="icon-btn" onClick={() => setNotice(null)}>
-            ✕
+          <button className="icon-btn" title="Dismiss notice" onClick={() => setNotice(null)}>
+            <XIcon size={14} />
           </button>
         </div>
       )}
@@ -564,7 +639,9 @@ export default function Chat(props: {
       {permission && (
         <div className="permission-bar">
           <div className="permission-title">
-            <span className="permission-icon">⚠</span>
+            <span className="permission-icon">
+              <WarnIcon size={16} />
+            </span>
             <span>
               Grok wants to run <code>{permission.toolName}</code>
             </span>
@@ -638,13 +715,17 @@ export default function Chat(props: {
               {images.map((src, i) => (
                 <span key={i} className="attach-thumb">
                   <img src={src} alt="" />
-                  <button onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}>✕</button>
+                  <button title="Remove image" onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}>
+                    <XIcon size={11} strokeWidth={2.2} />
+                  </button>
                 </span>
               ))}
               {files.map((f) => (
                 <span key={f} className="file-chip">
                   📄 {f.split('/').pop()}
-                  <button onClick={() => setFiles((prev) => prev.filter((x) => x !== f))}>✕</button>
+                  <button title={`Remove ${f.split('/').pop()}`} onClick={() => setFiles((prev) => prev.filter((x) => x !== f))}>
+                    <XIcon size={11} strokeWidth={2.2} />
+                  </button>
                 </span>
               ))}
             </div>
@@ -758,7 +839,7 @@ export default function Chat(props: {
               <>
                 {input.trim() && (
                   <button className="send-btn queue" title="Queue steering message" onClick={send}>
-                    ⤵
+                    <QueueIcon size={16} />
                   </button>
                 )}
                 <button
@@ -766,7 +847,7 @@ export default function Chat(props: {
                   title="Stop"
                   onClick={() => void window.harness.agent.cancel(session.id)}
                 >
-                  ◼
+                  <StopIcon size={16} />
                 </button>
               </>
             ) : (
@@ -776,7 +857,7 @@ export default function Chat(props: {
                 disabled={!input.trim() && images.length === 0}
                 onClick={send}
               >
-                ↑
+                <SendIcon size={16} strokeWidth={2} />
               </button>
             )}
           </div>
