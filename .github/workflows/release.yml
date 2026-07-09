@@ -51,3 +51,14 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+  # electron-builder can only attach assets to DRAFT releases, so the matrix
+  # jobs upload to a shared draft; this publishes it once they all finish.
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the draft release
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
