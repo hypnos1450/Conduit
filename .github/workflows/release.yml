@@ -21,13 +21,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # node-pty rebuild needs a C++ toolchain + Python (node-gyp).
+      # @electron/rebuild@4 / node-abi require Node >= 22.12.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
+
+      # Python 3.12+ dropped distutils; node-gyp still imports it.
+      # setuptools restores a compatible distutils. Pin 3.12 for consistency.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install setuptools for node-gyp
+        run: python -m pip install --upgrade setuptools
+
+      # Expose cl.exe / link.exe / Windows SDK so node-gyp can build node-pty.
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install dependencies
         run: npm ci
+        env:
+          # Help node-gyp locate VS 2022 on windows-latest.
+          npm_config_msvs_version: '2022'
 
       - name: Typecheck
         run: npm run typecheck
@@ -45,6 +64,7 @@ jobs:
           npm run build && npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          npm_config_msvs_version: '2022'
           # macOS signing + notarization (set these repo secrets to enable)
           CSC_LINK_SECRET: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD_SECRET: ${{ secrets.CSC_KEY_PASSWORD }}

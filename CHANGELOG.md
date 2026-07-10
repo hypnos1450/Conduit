@@ -4,6 +4,15 @@ All notable changes to Grok Harness. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.4.4 — 2026-07-10
+
+**Release CI fix for node-pty**
+
+- Bump GitHub Actions to Node 22 (matches `@electron/rebuild` / `node-abi` engines)
+- Install Python 3.12 + setuptools so node-gyp has `distutils` on macOS/Linux
+- Set up MSVC build tools on Windows (`ilammy/msvc-dev-cmd`) so `node-pty` rebuilds during `npm ci`
+- Unblocks multi-platform release builds that failed on macOS and Windows in 0.4.3
+
 ## 0.4.3 — 2026-07-09
 
 **Terminal overhaul**

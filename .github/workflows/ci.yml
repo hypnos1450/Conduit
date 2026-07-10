@@ -12,8 +12,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
+      # node-pty postinstall rebuild uses node-gyp (needs Python distutils).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install setuptools for node-gyp
+        run: python -m pip install --upgrade setuptools
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
