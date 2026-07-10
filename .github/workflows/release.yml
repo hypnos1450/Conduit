@@ -16,7 +16,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # windows-latest currently ships VS 18, which the node-gyp bundled
+        # with electron-builder cannot detect. Pin to windows-2022 (VS 2022).
+        os: [macos-latest, windows-2022, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +47,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
         env:
-          # Help node-gyp locate VS 2022 on windows-latest.
+          # Help node-gyp locate VS 2022 on windows-2022.
           npm_config_msvs_version: '2022'
 
       - name: Typecheck

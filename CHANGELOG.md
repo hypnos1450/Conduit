@@ -4,6 +4,12 @@ All notable changes to Grok Harness. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.4.5 — 2026-07-10
+
+**Windows release runner pin**
+
+- Pin release matrix to `windows-2022` — `windows-latest` now has VS 18, which the node-gyp bundled with electron-builder cannot detect, so `node-pty` rebuild still failed after 0.4.4
+
 ## 0.4.4 — 2026-07-10
 
 **Release CI fix for node-pty**
