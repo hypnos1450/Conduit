@@ -4,7 +4,7 @@ These files configure signed, notarized production builds. **Credentials are
 supplied via environment variables — never commit them.**
 
 ## macOS
-Set before running `npm run dist:mac`:
+Set before running `npm run dist:mac` (and as GitHub Actions secrets for releases):
 
 | Variable | What |
 |----------|------|
@@ -16,6 +16,12 @@ Set before running `npm run dist:mac`:
 
 Notarization runs automatically via `build/notarize.cjs` when those Apple vars
 are present; it's skipped otherwise (so local unsigned builds still work).
+
+**Without Developer ID + notarization**, every download/auto-update is stamped
+with `com.apple.quarantine` and Gatekeeper blocks launch until
+`xattr -cr "/Applications/Grok Harness.app"`. The app clears quarantine on
+startup and during install as a workaround, but signed+notarized builds are
+the real fix — users will not need `xattr` or right-click → Open.
 
 ## Windows
 | Variable | What |

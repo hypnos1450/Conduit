@@ -4,6 +4,14 @@ All notable changes to Grok Harness. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.4.7 — 2026-07-10
+
+**macOS quarantine after update**
+
+- Clear `com.apple.quarantine` on launch (unsigned/ad-hoc builds)
+- Custom Mac install path: unzip update, strip quarantine, swap `.app`, relaunch — so you should not need `xattr -cr` after auto-update
+- Real long-term fix remains Developer ID signing + notarization (`CSC_LINK` + Apple secrets; see `build/README.md`)
+
 ## 0.4.6 — 2026-07-10
 
 **Mac “Restart to update” fix**
