@@ -123,6 +123,20 @@ export function initUpdater(getWindow: () => BrowserWindow | null): void {
 
   let downloadedVersion: string | null = null
 
+  const senderOk = (e: Electron.IpcMainInvokeEvent): boolean => {
+    const win = getWindow()
+    return !!win && e.sender === win.webContents
+  }
+  const handle = (
+    channel: string,
+    fn: (e: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown
+  ): void => {
+    ipcMain.handle(channel, (e, ...args) => {
+      if (!senderOk(e)) throw new Error('IPC rejected: untrusted sender')
+      return fn(e, ...args)
+    })
+  }
+
   const send = (channel: string, payload?: unknown): void => {
     getWindow()?.webContents.send(channel, payload)
   }
@@ -147,7 +161,7 @@ export function initUpdater(getWindow: () => BrowserWindow | null): void {
     log.warn('update error', err?.message ?? err)
   })
 
-  ipcMain.handle('update:check', async () => {
+  handle('update:check', async () => {
     try {
       const result = await autoUpdater.checkForUpdates()
       return { ok: true, version: result?.updateInfo?.version }
@@ -156,7 +170,7 @@ export function initUpdater(getWindow: () => BrowserWindow | null): void {
     }
   })
 
-  ipcMain.handle('update:install', () => {
+  handle('update:install', () => {
     if (!downloadedVersion) {
       log.warn('install requested but no update downloaded yet')
       return { ok: false, error: 'Update is still downloading' }

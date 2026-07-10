@@ -28,6 +28,7 @@ import { recordOriginal } from './checkpoints'
 import { ApiToolDef } from './provider'
 import { Tool, ToolContext, ToolResult, toolByName } from './tools'
 import { SessionRecord, sessionStore } from '../sessions'
+import { bashAllowKey, resolveInWorkspace, writeAllowKey } from '../security'
 
 export type PermissionResponder = (request: PermissionRequest) => Promise<{
   allow: boolean
@@ -119,8 +120,8 @@ export class AgentRun {
     // immediately, and attach pasted images as vision input parts.
     let messageText = userText
     for (const rel of files) {
-      const abs = path.isAbsolute(rel) ? rel : path.resolve(this.session.meta.cwd, rel)
       try {
+        const abs = resolveInWorkspace(this.session.meta.cwd, rel)
         const raw = await fsp.readFile(abs, 'utf8')
         const capped = raw.length > 16_000 ? `${raw.slice(0, 16_000)}\n… (truncated)` : raw
         messageText += `\n\n[Attached file: ${rel}]\n\`\`\`\n${capped}\n\`\`\``
@@ -534,12 +535,21 @@ export class AgentRun {
       if (mode === 'auto-edit' && tool.kind === 'write') return true
     }
 
-    const allowKey =
-      tool.name === 'bash'
-        ? `bash:${String(input.command ?? '').trim().split(/\s+/)[0] ?? ''}`
-        : tool.name
-    if (this.session.allowlist.includes(allowKey)) return true
-    if (this.settings.globalAllowlist.includes(allowKey)) return true
+    // Path-scoped write keys; bash keys only for simple (non-compound) commands.
+    let allowKey: string | null = tool.name
+    if (tool.name === 'bash') {
+      allowKey = bashAllowKey(String(input.command ?? ''))
+    } else if (tool.kind === 'write' && typeof input.path === 'string') {
+      try {
+        const abs = resolveInWorkspace(this.session.meta.cwd, input.path)
+        allowKey = writeAllowKey(tool.name, abs, this.session.meta.cwd)
+      } catch {
+        allowKey = null // outside workspace — always re-prompt (and tool will fail)
+      }
+    }
+    // MCP tools keep full namespaced name as the allow key.
+    if (allowKey && this.session.allowlist.includes(allowKey)) return true
+    if (allowKey && this.settings.globalAllowlist.includes(allowKey)) return true
 
     const request: PermissionRequest = {
       requestId: id(),
@@ -548,16 +558,18 @@ export class AgentRun {
       summary: tool.summarize(input),
       input,
       preview,
-      priorApprovals: approvalCount(allowKey)
+      priorApprovals: allowKey ? approvalCount(allowKey) : 0
     }
     const { allow, alwaysAllow, globalAllow } = await this.askPermission(request)
     if (allow) {
-      bumpApproval(allowKey)
-      if (globalAllow && !this.settings.globalAllowlist.includes(allowKey)) {
-        this.settings.globalAllowlist.push(allowKey)
-        this.persistSettings()
-      } else if (alwaysAllow && !this.session.allowlist.includes(allowKey)) {
-        this.session.allowlist.push(allowKey)
+      if (allowKey) {
+        bumpApproval(allowKey)
+        if (globalAllow && !this.settings.globalAllowlist.includes(allowKey)) {
+          this.settings.globalAllowlist.push(allowKey)
+          this.persistSettings()
+        } else if (alwaysAllow && !this.session.allowlist.includes(allowKey)) {
+          this.session.allowlist.push(allowKey)
+        }
       }
     } else {
       recordFailure('denied', tool.name, tool.summarize(input))

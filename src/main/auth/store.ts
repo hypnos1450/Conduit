@@ -1,5 +1,6 @@
 // Credential storage and lifecycle. Tokens are encrypted with Electron's
 // safeStorage (Keychain / DPAPI / libsecret) and written under userData.
+// Fail closed when OS secure storage is unavailable — never write plaintext.
 import { app, safeStorage } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -19,13 +20,28 @@ function credFile(): string {
   return path.join(app.getPath('userData'), 'credentials.bin')
 }
 
+function requireSafeStorage(): void {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error(
+      'OS secure storage is unavailable. Sign-in requires Keychain (macOS), ' +
+        'Credential Manager (Windows), or libsecret (Linux).'
+    )
+  }
+}
+
 function readStored(): StoredCredentials | null {
   try {
     const raw = fs.readFileSync(credFile())
-    const json = safeStorage.isEncryptionAvailable()
-      ? safeStorage.decryptString(raw)
-      : raw.toString('utf8')
-    return JSON.parse(json) as StoredCredentials
+    // Legacy plaintext files (pre-hardening) are refused — user must re-auth.
+    if (!safeStorage.isEncryptionAvailable()) return null
+    try {
+      const json = safeStorage.decryptString(raw)
+      return JSON.parse(json) as StoredCredentials
+    } catch {
+      // Not decryptable (plaintext legacy or corrupt) — wipe and force re-login.
+      fs.rmSync(credFile(), { force: true })
+      return null
+    }
   } catch {
     return null
   }
@@ -37,10 +53,8 @@ function writeStored(creds: StoredCredentials | null): void {
     fs.rmSync(file, { force: true })
     return
   }
-  const json = JSON.stringify(creds)
-  const data = safeStorage.isEncryptionAvailable()
-    ? safeStorage.encryptString(json)
-    : Buffer.from(json, 'utf8')
+  requireSafeStorage()
+  const data = safeStorage.encryptString(JSON.stringify(creds))
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, data, { mode: 0o600 })
 }
@@ -66,6 +80,7 @@ export class AuthManager {
   }
 
   async loginOAuth(): Promise<void> {
+    requireSafeStorage()
     this.pendingLogin = true
     try {
       const tokens = await runOAuthFlow()
@@ -81,8 +96,10 @@ export class AuthManager {
   }
 
   setApiKey(key: string): void {
+    requireSafeStorage()
     const trimmed = key.trim()
     if (!trimmed) throw new Error('API key is empty')
+    if (trimmed.length > 512) throw new Error('API key is too long')
     this.creds = { method: 'apiKey', apiKey: trimmed }
     writeStored(this.creds)
   }

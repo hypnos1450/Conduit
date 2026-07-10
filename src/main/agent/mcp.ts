@@ -49,10 +49,35 @@ class McpManager {
     const conn: Connection = { config, tools: [] }
     this.connections.set(config.name, conn)
     try {
+      // Pass a filtered env: keep PATH/locale essentials, drop obvious secrets
+      // from the parent, then apply the server's configured env (from secrets store).
+      const baseEnv: Record<string, string> = {}
+      for (const key of [
+        'PATH',
+        'HOME',
+        'USER',
+        'LOGNAME',
+        'TMPDIR',
+        'TEMP',
+        'TMP',
+        'LANG',
+        'LC_ALL',
+        'TERM',
+        'SHELL',
+        'SystemRoot',
+        'USERPROFILE',
+        'APPDATA',
+        'LOCALAPPDATA',
+        'ComSpec',
+        'PATHEXT'
+      ]) {
+        const v = process.env[key]
+        if (v) baseEnv[key] = v
+      }
       const transport = new StdioClientTransport({
         command: config.command,
         args: config.args,
-        env: { ...(process.env as Record<string, string>), ...(config.env ?? {}) }
+        env: { ...baseEnv, ...(config.env ?? {}) }
       })
       const client = new Client(
         { name: 'grok-harness', version: '0.1.0' },

@@ -28,27 +28,79 @@ import { gitStatus } from './agent/git'
 import { logsDirectory } from './logger'
 import { suggestFiles } from './agent/tools'
 import { sessionStore, sessionToMarkdown } from './sessions'
+import {
+  applySettingsPatch,
+  assertExistingDir,
+  assertId,
+  isValidId,
+  isValidJobId,
+  loadSettingsFromDisk,
+  mergeMcpSecrets,
+  readSecretsBlob,
+  splitMcpSecrets,
+  writeSecretsBlob
+} from './security'
 
 const runs = new Map<string, AgentRun>()
 const pendingPermissions = new Map<
   string,
-  (res: { allow: boolean; alwaysAllow: boolean; globalAllow?: boolean }) => void
+  {
+    sessionId: string
+    resolve: (res: { allow: boolean; alwaysAllow: boolean; globalAllow?: boolean }) => void
+  }
 >()
 
 function settingsFile(): string {
   return path.join(app.getPath('userData'), 'settings.json')
 }
 
+function userDataDir(): string {
+  return app.getPath('userData')
+}
+
+/** Load public settings and re-attach encrypted MCP env secrets. */
 function loadSettings(): Settings {
+  const base = loadSettingsFromDisk(settingsFile())
   try {
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) }
+    const secrets = readSecretsBlob(userDataDir())
+    base.mcpServers = mergeMcpSecrets(base.mcpServers, secrets.mcpEnv)
   } catch {
-    return { ...DEFAULT_SETTINGS }
+    // secrets unavailable — MCP servers run without env
+  }
+  return base
+}
+
+/** Persist settings with MCP env stripped into secrets.bin. */
+function saveSettings(s: Settings): void {
+  const { publicServers, envByName } = splitMcpSecrets(s.mcpServers)
+  const publicSettings: Settings = { ...s, mcpServers: publicServers }
+  fs.writeFileSync(settingsFile(), JSON.stringify(publicSettings, null, 2), 'utf8')
+  try {
+    const existing = readSecretsBlob(userDataDir())
+    writeSecretsBlob(userDataDir(), { mcpEnv: { ...existing.mcpEnv, ...envByName } })
+    // Drop env for servers that were removed
+    const names = new Set(publicServers.map((x) => x.name))
+    const nextEnv: Record<string, Record<string, string>> = {}
+    for (const [k, v] of Object.entries({ ...existing.mcpEnv, ...envByName })) {
+      if (names.has(k)) nextEnv[k] = v
+    }
+    writeSecretsBlob(userDataDir(), { mcpEnv: nextEnv })
+  } catch {
+    // If secure storage is down, public settings still save; env is lost until re-entered.
   }
 }
 
-function saveSettings(s: Settings): void {
-  fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2), 'utf8')
+/** Settings returned to the renderer — MCP env values redacted. */
+function publicSettingsView(s: Settings): Settings {
+  return {
+    ...s,
+    mcpServers: s.mcpServers.map((srv) => ({
+      ...srv,
+      env: srv.env
+        ? Object.fromEntries(Object.keys(srv.env).map((k) => [k, srv.env![k] ? '••••••••' : '']))
+        : undefined
+    }))
+  }
 }
 
 let settings = DEFAULT_SETTINGS
@@ -134,10 +186,24 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   // ---- sessions
   handle('sessions:list', () => sessionStore.list())
   handle('sessions:create', (_e, opts: { cwd?: string; model?: ModelId }) => {
-    const rec = sessionStore.create({ ...opts, defaultModel: settings.defaultModel })
+    // Only accept cwd that exists as a directory. Free-form absolute paths from
+    // the renderer are allowed only if they resolve to a real dir (pickFolder /
+    // Home recent projects). Reject path traversal / non-dirs.
+    let cwd: string | undefined
+    if (opts?.cwd) {
+      try {
+        cwd = assertExistingDir(String(opts.cwd))
+      } catch (err) {
+        throw new Error(err instanceof Error ? err.message : 'Invalid working directory')
+      }
+    }
+    const model =
+      opts?.model === 'grok-4.3' || opts?.model === 'grok-build-0.1' ? opts.model : undefined
+    const rec = sessionStore.create({ cwd, model, defaultModel: settings.defaultModel })
     return rec.meta
   })
   handle('sessions:load', async (_e, sessionId: string) => {
+    if (!isValidId(sessionId)) return null
     const rec = await sessionStore.load(sessionId)
     if (!rec) return null
     const checkpoints = (rec.checkpoints ?? []).map((c) => ({
@@ -163,6 +229,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return { meta: rec.meta, items: rec.items, checkpoints, plan: rec.plan, usage }
   })
   handle('sessions:restoreCheckpoint', async (_e, sessionId: string, itemId: string) => {
+    assertId(sessionId, 'sessionId')
+    assertId(itemId, 'itemId')
     if (runs.has(sessionId)) throw new Error('Stop the agent before restoring a checkpoint')
     const rec = await sessionStore.load(sessionId)
     if (!rec) throw new Error('Session not found')
@@ -181,11 +249,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return { restored }
   })
   handle('sessions:delete', async (_e, sessionId: string) => {
+    assertId(sessionId, 'sessionId')
     runs.get(sessionId)?.cancel()
     runs.delete(sessionId)
     await sessionStore.remove(sessionId)
   })
   handle('sessions:rename', async (_e, sessionId: string, title: string) => {
+    assertId(sessionId, 'sessionId')
     const rec = await sessionStore.load(sessionId)
     if (rec) {
       rec.meta.title = title.slice(0, 120)
@@ -193,6 +263,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     }
   })
   handle('sessions:setModel', async (_e, sessionId: string, model: ModelId) => {
+    assertId(sessionId, 'sessionId')
+    if (model !== 'grok-4.3' && model !== 'grok-build-0.1') throw new Error('Invalid model')
     const rec = await sessionStore.load(sessionId)
     if (rec) {
       rec.meta.model = model
@@ -200,6 +272,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     }
   })
   handle('sessions:setEffort', async (_e, sessionId: string, effort: ReasoningEffort | null) => {
+    assertId(sessionId, 'sessionId')
     const rec = await sessionStore.load(sessionId)
     if (rec) {
       rec.meta.reasoningEffort =
@@ -208,10 +281,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     }
   })
   handle('sessions:fork', async (_e, sessionId: string, itemId: string) => {
+    assertId(sessionId, 'sessionId')
+    assertId(itemId, 'itemId')
     const rec = await sessionStore.fork(sessionId, itemId)
     return rec ? rec.meta : null
   })
   handle('sessions:export', async (_e, sessionId: string) => {
+    assertId(sessionId, 'sessionId')
     const rec = await sessionStore.load(sessionId)
     if (!rec) return null
     const win = getWindow()
@@ -226,15 +302,27 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return res.filePath
   })
   handle('sessions:gitStatus', async (_e, sessionId: string) => {
+    if (!isValidId(sessionId)) return { isRepo: false }
     const rec = await sessionStore.load(sessionId)
     if (!rec) return { isRepo: false }
     return gitStatus(rec.meta.cwd)
   })
 
   // ---- agent
+  const bindPermission = (
+    sessionId: string,
+    request: PermissionRequest
+  ): Promise<{ allow: boolean; alwaysAllow: boolean; globalAllow?: boolean }> =>
+    new Promise((resolve) => {
+      pendingPermissions.set(request.requestId, { sessionId, resolve })
+      emit({ type: 'permission-request', sessionId, request })
+    })
+
   handle(
     'agent:send',
     async (_e, sessionId: string, text: string, attachments?: Attachments) => {
+      assertId(sessionId, 'sessionId')
+      if (typeof text !== 'string' || text.length > 500_000) throw new Error('Invalid message')
       const rec = await sessionStore.load(sessionId)
       if (!rec) throw new Error('Session not found')
       if (runs.has(sessionId)) throw new Error('Agent is already running in this session')
@@ -243,12 +331,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         rec,
         settings,
         emit,
-        (request: PermissionRequest) => {
-          return new Promise((resolve) => {
-            pendingPermissions.set(request.requestId, resolve)
-            emit({ type: 'permission-request', sessionId, request })
-          })
-        },
+        (request: PermissionRequest) => bindPermission(sessionId, request),
         () => saveSettings(settings)
       )
       runs.set(sessionId, run)
@@ -256,10 +339,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     }
   )
   handle('agent:cancel', (_e, sessionId: string) => {
+    if (!isValidId(sessionId)) return
     runs.get(sessionId)?.cancel()
   })
-  handle('agent:isRunning', (_e, sessionId: string) => runs.has(sessionId))
+  handle('agent:isRunning', (_e, sessionId: string) =>
+    isValidId(sessionId) ? runs.has(sessionId) : false
+  )
   handle('agent:queue', (_e, sessionId: string, text: string) => {
+    if (!isValidId(sessionId) || typeof text !== 'string') return false
     return runs.get(sessionId)?.queueMessage(text) ?? false
   })
 
@@ -269,6 +356,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     text: string,
     attachments?: Attachments
   ): Promise<void> => {
+    assertId(sessionId, 'sessionId')
     const rec = await sessionStore.load(sessionId)
     if (!rec) throw new Error('Session not found')
     if (runs.has(sessionId)) throw new Error('Agent is already running in this session')
@@ -276,11 +364,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       rec,
       settings,
       emit,
-      (request: PermissionRequest) =>
-        new Promise((resolve) => {
-          pendingPermissions.set(request.requestId, resolve)
-          emit({ type: 'permission-request', sessionId, request })
-        }),
+      (request: PermissionRequest) => bindPermission(sessionId, request),
       () => saveSettings(settings)
     )
     runs.set(sessionId, run)
@@ -288,6 +372,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   }
 
   handle('agent:retry', async (_e, sessionId: string) => {
+    assertId(sessionId, 'sessionId')
     if (runs.has(sessionId)) throw new Error('Agent is already running')
     const rec = await sessionStore.load(sessionId)
     if (!rec) throw new Error('Session not found')
@@ -298,16 +383,34 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     if (text !== null) await startRun(sessionId, text)
   })
   handle('agent:editResend', async (_e, sessionId: string, itemId: string, text: string) => {
+    assertId(sessionId, 'sessionId')
+    assertId(itemId, 'itemId')
+    if (typeof text !== 'string') throw new Error('Invalid message')
     if (runs.has(sessionId)) throw new Error('Agent is already running')
     await sessionStore.truncateAt(sessionId, itemId)
     await startRun(sessionId, text)
   })
   handle(
     'agent:respondPermission',
-    (_e, requestId: string, allow: boolean, alwaysAllow?: boolean, globalAllow?: boolean) => {
-      const resolve = pendingPermissions.get(requestId)
+    (
+      _e,
+      requestId: string,
+      allow: boolean,
+      alwaysAllow?: boolean,
+      globalAllow?: boolean,
+      sessionId?: string
+    ) => {
+      if (!isValidId(requestId)) return
+      const pending = pendingPermissions.get(requestId)
+      if (!pending) return
+      // Bind response to the session that issued the request (single-use).
+      if (sessionId && pending.sessionId !== sessionId) return
       pendingPermissions.delete(requestId)
-      resolve?.({ allow, alwaysAllow: alwaysAllow ?? false, globalAllow: globalAllow ?? false })
+      pending.resolve({
+        allow: !!allow,
+        alwaysAllow: alwaysAllow ?? false,
+        globalAllow: globalAllow ?? false
+      })
     }
   )
 
@@ -353,33 +456,46 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   // ---- files
   handle('files:suggest', async (_e, sessionId: string, query: string) => {
+    if (!isValidId(sessionId)) return []
     const rec = await sessionStore.load(sessionId)
     if (!rec) return []
-    return suggestFiles(rec.meta.cwd, query)
+    return suggestFiles(rec.meta.cwd, String(query ?? '').slice(0, 200))
   })
 
   // ---- slash commands
   handle('commands:list', () => listCommands())
   handle('commands:resolve', (_e, name: string, args: string) =>
-    resolveCommand(String(name ?? ''), String(args ?? ''))
+    resolveCommand(String(name ?? '').slice(0, 64), String(args ?? '').slice(0, 4000))
   )
   handle('commands:openFolder', () => shell.openPath(ensureCommandsDir()))
 
   // ---- right dock panels
   handle('panels:listDir', async (_e, sessionId: string, rel: string) => {
+    if (!isValidId(sessionId)) return []
     const rec = await sessionStore.load(sessionId)
     return rec ? listDir(rec.meta.cwd, String(rel ?? '')) : []
   })
   handle('panels:readFile', async (_e, sessionId: string, rel: string) => {
+    if (!isValidId(sessionId)) return { kind: 'error', message: 'Session not found.' }
     const rec = await sessionStore.load(sessionId)
     if (!rec) return { kind: 'error', message: 'Session not found.' }
     return readFilePreview(rec.meta.cwd, String(rel ?? ''))
   })
+
+  // Terminal: session must exist; job ids validated; command length capped.
+  // Terminal is an intentional user shell surface (not agent-gated) — only the
+  // owning session's cwd is used, never a renderer-supplied path.
+  const requireSession = async (sessionId: string) => {
+    if (!isValidId(sessionId)) return null
+    return sessionStore.load(sessionId)
+  }
+  const capCmd = (command: unknown): string => String(command ?? '').slice(0, 32_000)
+
   handle('term:open', async (_e, sessionId: string) => {
-    const rec = await sessionStore.load(sessionId)
+    const rec = await requireSession(sessionId)
     if (!rec) {
       return {
-        sessionId,
+        sessionId: isValidId(sessionId) ? sessionId : '',
         mode: 'spawn' as const,
         jobs: [],
         activeJobId: '',
@@ -399,55 +515,83 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       command: string,
       opts?: { jobId?: string; name?: string; newJob?: boolean }
     ) => {
-      const rec = await sessionStore.load(sessionId)
+      const rec = await requireSession(sessionId)
       if (!rec) return { ok: false, error: 'Session not found.' }
-      return termManager.run(sessionId, rec.meta.cwd, String(command ?? ''), opts)
+      if (opts?.jobId && !isValidJobId(opts.jobId)) return { ok: false, error: 'Invalid job.' }
+      return termManager.run(sessionId, rec.meta.cwd, capCmd(command), {
+        ...opts,
+        name: opts?.name ? String(opts.name).slice(0, 80) : undefined
+      })
     }
   )
   handle('term:createJob', async (_e, sessionId: string, name?: string) => {
-    const rec = await sessionStore.load(sessionId)
+    const rec = await requireSession(sessionId)
     if (!rec) return { ok: false, error: 'Session not found.' }
-    return termManager.createJob(sessionId, rec.meta.cwd, name)
+    return termManager.createJob(sessionId, rec.meta.cwd, name ? String(name).slice(0, 80) : undefined)
   })
   handle('term:write', (_e, sessionId: string, data: string, jobId?: string) => {
-    termManager.write(sessionId, String(data ?? ''), jobId)
+    if (!isValidId(sessionId) || (jobId && !isValidJobId(jobId))) return
+    // Cap stdin chunks so a compromised renderer can't flood the PTY.
+    termManager.write(sessionId, String(data ?? '').slice(0, 16_384), jobId)
   })
   handle(
     'term:resize',
     (_e, sessionId: string, cols: number, rows: number, jobId?: string) => {
-      termManager.resize(sessionId, Number(cols) || 80, Number(rows) || 24, jobId)
+      if (!isValidId(sessionId) || (jobId && !isValidJobId(jobId))) return
+      termManager.resize(
+        sessionId,
+        Math.min(Math.max(Number(cols) || 80, 20), 500),
+        Math.min(Math.max(Number(rows) || 24, 5), 200),
+        jobId
+      )
     }
   )
-  handle('term:kill', (_e, sessionId: string, jobId?: string) => termManager.kill(sessionId, jobId))
+  handle('term:kill', (_e, sessionId: string, jobId?: string) => {
+    if (!isValidId(sessionId) || (jobId && !isValidJobId(jobId))) return
+    termManager.kill(sessionId, jobId)
+  })
   handle('term:closeJob', async (_e, sessionId: string, jobId: string) => {
-    const rec = await sessionStore.load(sessionId)
-    if (!rec) return null
+    const rec = await requireSession(sessionId)
+    if (!rec || !isValidJobId(jobId)) return null
     return termManager.closeJob(sessionId, jobId) ?? termManager.snapshot(sessionId, rec.meta.cwd)
   })
   handle('term:setActiveJob', (_e, sessionId: string, jobId: string) => {
+    if (!isValidId(sessionId) || !isValidJobId(jobId)) return
     termManager.setActiveJob(sessionId, jobId)
   })
-  handle('term:clear', (_e, sessionId: string, jobId?: string) => termManager.clear(sessionId, jobId))
+  handle('term:clear', (_e, sessionId: string, jobId?: string) => {
+    if (!isValidId(sessionId) || (jobId && !isValidJobId(jobId))) return
+    termManager.clear(sessionId, jobId)
+  })
   handle('term:restart', async (_e, sessionId: string, jobId?: string) => {
-    const rec = await sessionStore.load(sessionId)
+    const rec = await requireSession(sessionId)
     if (!rec) return { ok: false, error: 'Session not found.' }
+    if (jobId && !isValidJobId(jobId)) return { ok: false, error: 'Invalid job.' }
     return termManager.restart(sessionId, rec.meta.cwd, jobId)
   })
   handle('term:snapshot', async (_e, sessionId: string) => {
-    const rec = await sessionStore.load(sessionId)
+    const rec = await requireSession(sessionId)
     return termManager.snapshot(sessionId, rec?.meta.cwd)
   })
-  handle('term:history', (_e, sessionId: string) => termManager.history(sessionId))
+  handle('term:history', (_e, sessionId: string) =>
+    isValidId(sessionId) ? termManager.history(sessionId) : []
+  )
   handle('term:openExternal', async (_e, sessionId: string) => {
-    const rec = await sessionStore.load(sessionId)
+    const rec = await requireSession(sessionId)
     if (rec) termManager.openExternal(rec.meta.cwd)
   })
   handle(
     'term:pin',
     async (_e, sessionId: string, command: string, name?: string) => {
-      const rec = await sessionStore.load(sessionId)
+      const rec = await requireSession(sessionId)
       if (!rec) return { ok: false, error: 'Session not found.' }
-      return termManager.pinAgentCommand(sessionId, rec.meta.cwd, String(command ?? ''), name)
+      // Pin is only for agent-originated commands the user already saw in chat.
+      return termManager.pinAgentCommand(
+        sessionId,
+        rec.meta.cwd,
+        capCmd(command),
+        name ? String(name).slice(0, 80) : undefined
+      )
     }
   )
 
@@ -457,7 +601,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     await mcpManager.sync(settings.mcpServers)
     return mcpManager.status()
   })
-  handle('mcp:previewInstall', (_e, input: string) => previewMcpInstall(String(input ?? '')))
+  handle('mcp:previewInstall', (_e, input: string) =>
+    previewMcpInstall(String(input ?? '').slice(0, 2000))
+  )
   handle(
     'mcp:install',
     async (
@@ -465,9 +611,48 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       input: string,
       opts?: { name?: string; env?: Record<string, string>; extraArgs?: string[] }
     ) => {
-      const result = await installMcpFromInput(String(input ?? ''), opts ?? {})
+      const win = getWindow()
+      if (!win) return { ok: false, error: 'No window' }
+      // Native confirm before downloading/spawning third-party MCP code.
+      const preview = await previewMcpInstall(String(input ?? '').slice(0, 2000))
+      if (!preview.ok) return preview
+      const detail = [
+        preview.source ? `Source: ${preview.source}` : null,
+        preview.command ? `Command: ${preview.command} ${(preview.args ?? []).join(' ')}` : null,
+        ...(preview.notes ?? [])
+      ]
+        .filter(Boolean)
+        .join('\n')
+      const choice = await dialog.showMessageBox(win, {
+        type: 'warning',
+        buttons: ['Install', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Install MCP server?',
+        message: `Install MCP server “${preview.name ?? 'unknown'}”?`,
+        detail:
+          detail +
+          '\n\nThis will download and run third-party code with your user privileges.'
+      })
+      if (choice.response !== 0) return { ok: false, error: 'Install cancelled.' }
+
+      const safeOpts = {
+        name: opts?.name ? String(opts.name).slice(0, 64) : undefined,
+        env:
+          opts?.env && typeof opts.env === 'object'
+            ? Object.fromEntries(
+                Object.entries(opts.env)
+                  .filter(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(k) && typeof v === 'string')
+                  .map(([k, v]) => [k, String(v).slice(0, 8192)])
+                  .slice(0, 40)
+              )
+            : undefined,
+        extraArgs: Array.isArray(opts?.extraArgs)
+          ? opts!.extraArgs!.filter((a) => typeof a === 'string').map((a) => a.slice(0, 512)).slice(0, 20)
+          : undefined
+      }
+      const result = await installMcpFromInput(String(input ?? '').slice(0, 2000), safeOpts)
       if (!result.ok || !result.server) return result
-      // Merge into settings (replace same name)
       const next = [
         ...settings.mcpServers.filter((s) => s.name !== result.server!.name),
         result.server
@@ -480,15 +665,53 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   )
 
   // ---- settings & misc
-  handle('settings:get', () => settings)
-  handle('settings:set', (_e, patch: Partial<Settings>) => {
-    const mcpChanged =
-      patch.mcpServers !== undefined &&
-      JSON.stringify(patch.mcpServers) !== JSON.stringify(settings.mcpServers)
-    settings = { ...settings, ...patch }
+  handle('settings:get', () => publicSettingsView(settings))
+  handle('settings:set', async (_e, patch: Partial<Settings>) => {
+    // Schema-validate; unknown keys dropped. MCP command changes require confirm.
+    const prevMcp = JSON.stringify(
+      settings.mcpServers.map((s) => ({ name: s.name, command: s.command, args: s.args, enabled: s.enabled }))
+    )
+    // Restore real env values when renderer sends redacted placeholders.
+    if (Array.isArray(patch?.mcpServers)) {
+      patch = {
+        ...patch,
+        mcpServers: patch.mcpServers.map((incoming) => {
+          const existing = settings.mcpServers.find((s) => s.name === incoming.name)
+          if (!incoming.env || !existing?.env) return incoming
+          const merged: Record<string, string> = { ...(existing.env ?? {}) }
+          for (const [k, v] of Object.entries(incoming.env)) {
+            if (v && v !== '••••••••') merged[k] = v
+          }
+          return { ...incoming, env: merged }
+        })
+      }
+    }
+    const next = applySettingsPatch(settings, patch)
+    const nextMcp = JSON.stringify(
+      next.mcpServers.map((s) => ({ name: s.name, command: s.command, args: s.args, enabled: s.enabled }))
+    )
+    if (nextMcp !== prevMcp) {
+      const win = getWindow()
+      if (win) {
+        const choice = await dialog.showMessageBox(win, {
+          type: 'warning',
+          buttons: ['Apply', 'Cancel'],
+          defaultId: 1,
+          cancelId: 1,
+          title: 'Change MCP servers?',
+          message: 'Apply MCP server configuration changes?',
+          detail:
+            'MCP servers run as local processes with your user privileges. ' +
+            'Only apply changes you initiated.'
+        })
+        if (choice.response !== 0) return publicSettingsView(settings)
+      }
+    }
+    const mcpChanged = nextMcp !== prevMcp
+    settings = next
     saveSettings(settings)
     if (mcpChanged) void mcpManager.sync(settings.mcpServers).catch(() => undefined)
-    return settings
+    return publicSettingsView(settings)
   })
   handle('auth:probe', () => probeAccess())
   handle('revealLogs', () => shell.openPath(logsDirectory()))
@@ -498,12 +721,21 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     const res = await dialog.showOpenDialog(win, {
       properties: ['openDirectory', 'createDirectory']
     })
-    return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
+    if (res.canceled || res.filePaths.length === 0) return null
+    try {
+      return assertExistingDir(res.filePaths[0])
+    } catch {
+      return null
+    }
   })
   handle('openExternal', (_e, url: string) => {
-    const parsed = new URL(url)
-    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
-      return shell.openExternal(url)
+    try {
+      const parsed = new URL(String(url ?? ''))
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+        return shell.openExternal(parsed.toString())
+      }
+    } catch {
+      // invalid URL
     }
     return undefined
   })

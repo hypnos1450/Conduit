@@ -422,7 +422,8 @@ export interface HarnessApi {
       requestId: string,
       allow: boolean,
       alwaysAllow?: boolean,
-      globalAllow?: boolean
+      globalAllow?: boolean,
+      sessionId?: string
     ): Promise<void>
     onEvent(cb: (ev: AgentEvent) => void): () => void
   }

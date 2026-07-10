@@ -16,15 +16,15 @@ import {
   TermSnapshot
 } from '@shared/types'
 import { logger } from './logger'
+import { safeResolve as jailResolve } from './security'
 
 const log = logger('panels')
 
 // ------------------------------------------------------------ file browsing
 
-/** Resolve a workspace-relative path, refusing escapes from the cwd. */
+/** Resolve a workspace-relative path, refusing escapes/symlinks out of cwd. */
 function safeResolve(cwd: string, rel: string): string | null {
-  const abs = path.resolve(cwd, rel)
-  return abs === cwd || abs.startsWith(cwd + path.sep) ? abs : null
+  return jailResolve(cwd, rel || '.')
 }
 
 export function listDir(cwd: string, rel: string): FileEntry[] {
@@ -162,6 +162,10 @@ function historyFile(sessionId: string): string {
 }
 
 function bufferFile(sessionId: string, jobId: string): string {
+  // Guard path joins against traversal even if a caller skips IPC validation.
+  if (!/^[a-f0-9]{8,64}$/i.test(sessionId) || !/^[a-zA-Z0-9_-]{1,64}$/.test(jobId)) {
+    throw new Error('Invalid terminal buffer id')
+  }
   return path.join(app.getPath('userData'), 'term-buffers', sessionId, `${jobId}.log`)
 }
 

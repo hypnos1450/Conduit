@@ -397,7 +397,13 @@ export default function Chat(props: {
 
   const respondPermission = (allow: boolean, always = false, global = false): void => {
     if (!permission) return
-    void window.harness.agent.respondPermission(permission.requestId, allow, always, global)
+    void window.harness.agent.respondPermission(
+      permission.requestId,
+      allow,
+      always,
+      global,
+      session?.id ?? permission.sessionId
+    )
     setPermission(null)
   }
 

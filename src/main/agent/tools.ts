@@ -11,6 +11,7 @@ import { MemoryTarget, memoryStore } from './memory'
 import { skillStore } from './skills'
 import { spawnAgentTool } from './subagent'
 import { sessionStore } from '../sessions'
+import { assertPublicUrl, resolveInWorkspace } from '../security'
 
 // 'memory' mutates only the agent's own memory store — never the user's
 // files or shell — so it runs without a permission prompt, like reads.
@@ -58,8 +59,9 @@ function clamp(text: string, limit = MAX_TOOL_OUTPUT): string {
   return `${head}\n… [${text.length - limit} chars truncated] …\n${tail}`
 }
 
+/** Workspace-jailed path resolve (absolute/`..`/symlink escape rejected). */
 function resolveInCwd(cwd: string, p: string): string {
-  return path.isAbsolute(p) ? p : path.resolve(cwd, p)
+  return resolveInWorkspace(cwd, p)
 }
 
 function str(input: Record<string, unknown>, key: string, required = true): string {
@@ -130,9 +132,17 @@ const bashTool: Tool = {
       const timeoutS = Math.min(Number(input.timeout_seconds) || 120, 600)
       const shellBin = process.platform === 'win32' ? 'cmd.exe' : '/bin/zsh'
       const shellArgs = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-lc', command]
+      // Inherit env but drop common credential vars so a confused model
+      // can't trivially dump tokens via `env` / `printenv`.
+      const env: NodeJS.ProcessEnv = { ...process.env, CLICOLOR: '0', NO_COLOR: '1', GIT_PAGER: 'cat', PAGER: 'cat' }
+      for (const k of Object.keys(env)) {
+        if (/^(XAI_|OPENAI_|ANTHROPIC_|AWS_|GH_TOKEN|GITHUB_TOKEN|NPM_TOKEN|API_KEY|.*_API_KEY|.*_SECRET|.*_TOKEN)$/i.test(k)) {
+          delete env[k]
+        }
+      }
       const child = spawn(shellBin, shellArgs, {
         cwd: ctx.cwd,
-        env: { ...process.env, CLICOLOR: '0', NO_COLOR: '1', GIT_PAGER: 'cat', PAGER: 'cat' },
+        env,
         stdio: ['ignore', 'pipe', 'pipe']
       })
       let out = ''
@@ -178,7 +188,7 @@ const readFileTool: Tool = {
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'File path (absolute or relative to workspace)' },
+          path: { type: 'string', description: 'File path relative to workspace (absolute paths outside the workspace are rejected)' },
           offset: { type: 'number', description: '1-based line to start from' },
           limit: { type: 'number', description: 'Max lines to return (default 1500)' }
         },
@@ -559,8 +569,7 @@ const memoryTool: Tool = {
 
 const FETCH_MAX_BYTES = 2 * 1024 * 1024
 const FETCH_MAX_CHARS = 40_000
-const PRIVATE_HOST_RE =
-  /^(localhost|127\.|0\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$|\[?f[cd])/i
+const FETCH_MAX_REDIRECTS = 5
 
 /** Strip an HTML document down to readable text (title, headings, prose, links). */
 export function htmlToText(html: string): string {
@@ -616,27 +625,43 @@ const fetchPageTool: Tool = {
     } catch {
       return { ok: false, output: 'Invalid URL.' }
     }
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-      return { ok: false, output: 'Only http(s) URLs can be fetched.' }
-    }
-    if (PRIVATE_HOST_RE.test(url.hostname)) {
-      return { ok: false, output: 'Refusing to fetch local/private addresses.' }
+    try {
+      await assertPublicUrl(url)
+    } catch (err) {
+      return { ok: false, output: err instanceof Error ? err.message : String(err) }
     }
     const timeout = AbortSignal.timeout(20_000)
     const signal = AbortSignal.any([ctx.signal, timeout])
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (compatible; GrokHarness/1.0)',
+      Accept: 'text/html,application/json,text/*;q=0.9,*/*;q=0.5'
+    }
+    // Manual redirects so every hop is re-checked against private IPs/DNS.
     let res: Response
+    let current = url
     try {
-      res = await fetch(url, {
-        signal,
-        redirect: 'follow',
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; GrokHarness/1.0)', Accept: 'text/html,application/json,text/*;q=0.9,*/*;q=0.5' }
-      })
+      for (let hop = 0; hop <= FETCH_MAX_REDIRECTS; hop++) {
+        res = await fetch(current, { signal, redirect: 'manual', headers })
+        if (res.status >= 300 && res.status < 400) {
+          const loc = res.headers.get('location')
+          if (!loc) return { ok: false, output: `HTTP ${res.status} redirect without Location` }
+          const next = new URL(loc, current)
+          await assertPublicUrl(next)
+          current = next
+          continue
+        }
+        break
+      }
     } catch (err) {
       return { ok: false, output: `Fetch failed: ${err instanceof Error ? err.message : String(err)}` }
     }
+    if (!res!) return { ok: false, output: 'Empty response.' }
+    if (res.status >= 300 && res.status < 400) {
+      return { ok: false, output: `Too many redirects (max ${FETCH_MAX_REDIRECTS}).` }
+    }
     if (!res.ok) return { ok: false, output: `HTTP ${res.status} ${res.statusText}` }
     const ctype = res.headers.get('content-type') ?? ''
-    if (!/text|json|xml|javascript/i.test(ctype)) {
+    if (!/text|json|xml/i.test(ctype) || /javascript/i.test(ctype)) {
       return { ok: false, output: `Unsupported content type: ${ctype || 'unknown'} (only text-like content).` }
     }
     // Stream with a byte cap so a huge page can't blow up memory.
@@ -660,7 +685,7 @@ const fetchPageTool: Tool = {
     return {
       ok: true,
       output:
-        `[${url.href}]\n` +
+        `[${current.href}]\n` +
         text.slice(0, FETCH_MAX_CHARS) +
         (clipped || total >= FETCH_MAX_BYTES ? '\n\n[...truncated]' : '')
     }

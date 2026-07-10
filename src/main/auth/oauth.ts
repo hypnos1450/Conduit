@@ -129,7 +129,11 @@ async function parseTokenResponse(
 ): Promise<TokenSet> {
   const text = await res.text()
   if (!res.ok) {
-    throw new Error(`xAI token request failed (HTTP ${res.status})${text ? `: ${text}` : ''}`)
+    // Never echo full token-endpoint bodies (may contain sensitive fields).
+    const safe = text.replace(/"(access_token|refresh_token|id_token)"\s*:\s*"[^"]*"/gi, '"$1":"[redacted]"')
+    throw new Error(
+      `xAI token request failed (HTTP ${res.status})${safe ? `: ${safe.slice(0, 200)}` : ''}`
+    )
   }
   const payload = JSON.parse(text) as Record<string, unknown>
   const accessToken = String(payload.access_token ?? '').trim()

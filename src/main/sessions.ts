@@ -78,6 +78,8 @@ class SessionStore {
 
   create(opts: { cwd?: string; model?: ModelId; defaultModel: ModelId }): SessionRecord {
     const now = Date.now()
+    // cwd must already be validated by the IPC layer (dialog-picked or home).
+    const cwd = opts.cwd ?? app.getPath('home')
     const rec: SessionRecord = {
       meta: {
         id: crypto.randomBytes(10).toString('hex'),
@@ -85,7 +87,7 @@ class SessionStore {
         createdAt: now,
         updatedAt: now,
         model: opts.model ?? opts.defaultModel,
-        cwd: opts.cwd ?? app.getPath('home'),
+        cwd,
         messageCount: 0
       },
       items: [],
@@ -103,6 +105,8 @@ class SessionStore {
   }
 
   async load(id: string): Promise<SessionRecord | null> {
+    // Reject path-traversal style ids before any filesystem join.
+    if (typeof id !== 'string' || !/^[a-f0-9]{8,64}$/i.test(id)) return null
     const cached = this.cache.get(id)
     if (cached) return cached
     try {
@@ -213,6 +217,7 @@ class SessionStore {
   }
 
   async remove(id: string): Promise<void> {
+    if (typeof id !== 'string' || !/^[a-f0-9]{8,64}$/i.test(id)) return
     this.cache.delete(id)
     this.metas.delete(id)
     await fsp.rm(path.join(this.dir, `${id}.json`), { force: true })

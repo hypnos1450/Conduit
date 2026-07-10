@@ -4,6 +4,21 @@ All notable changes to Grok Harness. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.4.8 — 2026-07-10
+
+**Security hardening**
+
+- Workspace path jail for agent file tools + panel browser (`realpath`, reject `..` / absolute escapes)
+- Schema-validated `settings:set`; MCP command changes require a native confirm dialog
+- Session cwd must be an existing directory; session/job IDs sanitized before path joins
+- Terminal IPC session-bound with command/stdin caps (no free-form path)
+- Path-scoped write allowlists; bash allowlist only for simple (non-compound) commands
+- `fetch_page` re-validates DNS + every redirect hop against private IPs
+- Credentials fail closed without OS secure storage; MCP env secrets in `secrets.bin`
+- Permission responses bound to session + single-use request ids; updater IPC uses sender checks
+- Strip credential-like env vars from agent bash; filtered env for MCP servers
+- Tighter CSP (`object-src`, `base-uri`, `form-action`, `frame-ancestors`)
+
 ## 0.4.7 — 2026-07-10
 
 **macOS quarantine after update**

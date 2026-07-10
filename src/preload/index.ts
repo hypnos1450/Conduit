@@ -40,8 +40,15 @@ const api: HarnessApi = {
     editResend: (sessionId, itemId, text) =>
       ipcRenderer.invoke('agent:editResend', sessionId, itemId, text),
     isRunning: (sessionId) => ipcRenderer.invoke('agent:isRunning', sessionId),
-    respondPermission: (requestId, allow, alwaysAllow, globalAllow) =>
-      ipcRenderer.invoke('agent:respondPermission', requestId, allow, alwaysAllow, globalAllow),
+    respondPermission: (requestId, allow, alwaysAllow, globalAllow, sessionId) =>
+      ipcRenderer.invoke(
+        'agent:respondPermission',
+        requestId,
+        allow,
+        alwaysAllow,
+        globalAllow,
+        sessionId
+      ),
     onEvent: (cb: (ev: AgentEvent) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, ev: AgentEvent): void => cb(ev)
       ipcRenderer.on('agent:event', listener)
