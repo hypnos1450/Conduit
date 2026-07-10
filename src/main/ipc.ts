@@ -136,10 +136,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     let title: string | null = null
     let body = ''
     if (ev.type === 'permission-request') {
-      title = 'Grok needs approval'
+      title = 'Conduit needs approval'
       body = `${ev.request.toolName}: ${ev.request.summary}`.slice(0, 120)
     } else if (ev.type === 'turn-end' && (ev.stopReason === 'done' || ev.stopReason === 'error')) {
-      title = ev.stopReason === 'done' ? 'Grok finished a task' : 'Grok hit an error'
+      title = ev.stopReason === 'done' ? 'Conduit finished a task' : 'Conduit hit an error'
     }
     if (!title) return
     const sessionId = 'sessionId' in ev ? ev.sessionId : undefined
@@ -878,7 +878,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     const win = getWindow()
     if (!win) return null
     const res = await dialog.showSaveDialog(win, {
-      defaultPath: 'grok-harness-audit.md',
+      defaultPath: 'conduit-audit.md',
       filters: [{ name: 'Markdown', extensions: ['md'] }]
     })
     if (res.canceled || !res.filePath) return null
@@ -971,12 +971,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     const win = getWindow()
     if (!win) return { ok: false, error: 'No window' }
     const res = await dialog.showSaveDialog(win, {
-      defaultPath: `grok-harness-diagnostics-${app.getVersion()}.md`,
+      defaultPath: `conduit-diagnostics-${app.getVersion()}.md`,
       filters: [{ name: 'Markdown', extensions: ['md'] }]
     })
     if (res.canceled || !res.filePath) return { ok: false, error: 'Cancelled' }
     const lines = [
-      `# Grok Harness diagnostics`,
+      `# Conduit diagnostics`,
       ``,
       `- Version: ${app.getVersion()}`,
       `- Platform: ${process.platform} ${process.arch}`,

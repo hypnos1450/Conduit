@@ -40,7 +40,7 @@ export default function Login({ onAuthed }: { onAuthed: (a: AuthState) => void }
   return (
     <div className="login-screen">
       <div className="login-card">
-        <div className="login-logo">Grok Harness</div>
+        <div className="login-logo">Conduit</div>
         <div className="login-sub">An agent workbench for Grok 4.3 and Grok Build</div>
 
         <button className="btn primary" onClick={() => void loginOAuth()} disabled={busy}>

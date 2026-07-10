@@ -1,8 +1,8 @@
 {
-  "name": "grok-harness",
-  "productName": "Grok Harness",
-  "version": "0.5.0",
-  "description": "Desktop agent harness for xAI Grok 4.5 and Grok 4.3, with xAI subscription OAuth",
+  "name": "conduit",
+  "productName": "Conduit",
+  "version": "0.5.1",
+  "description": "Conduit — desktop agent for xAI Grok 4.5 and Grok 4.3, with xAI subscription OAuth",
   "main": "out/main/index.js",
   "author": {
     "name": "Matt",
@@ -51,8 +51,8 @@
     "vite": "^6.0.0"
   },
   "build": {
-    "appId": "com.grokharness.app",
-    "productName": "Grok Harness",
+    "appId": "com.conduit.app",
+    "productName": "Conduit",
     "files": [
       "out/**/*"
     ],

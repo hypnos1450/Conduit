@@ -37,7 +37,7 @@ function clearQuarantine(targetPath: string): void {
  */
 function installMacUpdateManually(zipPath: string): boolean {
   const appPath = app.getPath('exe')
-  // .../Grok Harness.app/Contents/MacOS/Grok Harness → .../Grok Harness.app
+  // .../Conduit.app/Contents/MacOS/Conduit → .../Conduit.app
   const appBundle = path.resolve(appPath, '..', '..', '..')
   if (!appBundle.endsWith('.app') || !fs.existsSync(zipPath)) {
     log.warn('manual mac install: bad paths', { appBundle, zipPath })

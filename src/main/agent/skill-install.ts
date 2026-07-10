@@ -240,7 +240,7 @@ export function parseGitHubUrl(input: string): GhTarget | null {
 async function downloadTarball(target: GhTarget, dest: string): Promise<void> {
   const ref = target.ref ?? 'HEAD'
   const url = `https://codeload.github.com/${target.owner}/${target.repo}/tar.gz/${encodeURIComponent(ref)}`
-  const res = await fetch(url, { headers: { 'User-Agent': 'grok-harness' } })
+  const res = await fetch(url, { headers: { 'User-Agent': 'conduit' } })
   if (res.status === 404) {
     throw new Error('Repository or branch not found — check the URL (private repos are not supported).')
   }

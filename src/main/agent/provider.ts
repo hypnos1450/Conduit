@@ -235,7 +235,7 @@ async function streamOnce(opts: {
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${bearer}`,
-      'x-grok-source': 'grok-harness'
+      'x-grok-source': 'conduit'
     },
     body: JSON.stringify(body),
     signal: opts.signal

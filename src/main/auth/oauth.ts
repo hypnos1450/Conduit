@@ -80,7 +80,7 @@ async function startListener(): Promise<Listener> {
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
     res.end(
-      `<html><body style="font-family:system-ui;background:#111;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h2>Signed in to xAI</h2><p>You can close this tab and return to Grok Harness.</p></div></body></html>`
+      `<html><body style="font-family:system-ui;background:#111;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h2>Signed in to xAI</h2><p>You can close this tab and return to Conduit.</p></div></body></html>`
     )
     resolveCb(url)
   })

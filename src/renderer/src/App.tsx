@@ -328,8 +328,8 @@ export default function App(): JSX.Element {
           <div className="update-banner">
             <span>
               {update.ready
-                ? `Grok Harness ${update.version} is ready.`
-                : `Downloading Grok Harness ${update.version}…`}
+                ? `Conduit ${update.version} is ready.`
+                : `Downloading Conduit ${update.version}…`}
             </span>
             {update.ready && (
               <button

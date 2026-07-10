@@ -19,7 +19,7 @@ are present; it's skipped otherwise (so local unsigned builds still work).
 
 **Without Developer ID + notarization**, every download/auto-update is stamped
 with `com.apple.quarantine` and Gatekeeper blocks launch until
-`xattr -cr "/Applications/Grok Harness.app"`. The app clears quarantine on
+`xattr -cr "/Applications/Conduit.app"`. The app clears quarantine on
 startup and during install as a workaround, but signed+notarized builds are
 the real fix — users will not need `xattr` or right-click → Open.
 

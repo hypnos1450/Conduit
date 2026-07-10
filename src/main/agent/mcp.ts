@@ -80,7 +80,7 @@ class McpManager {
         env: { ...baseEnv, ...(config.env ?? {}) }
       })
       const client = new Client(
-        { name: 'grok-harness', version: '0.1.0' },
+        { name: 'conduit', version: '0.1.0' },
         { capabilities: {} }
       )
       await client.connect(transport)

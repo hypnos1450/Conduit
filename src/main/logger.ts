@@ -33,7 +33,7 @@ export function initLogging(): void {
     log.warn('crashReporter unavailable', err)
   }
 
-  log.info(`Grok Harness ${app.getVersion()} starting on ${process.platform}`)
+  log.info(`Conduit ${app.getVersion()} starting on ${process.platform}`)
 }
 
 export function logsDirectory(): string {

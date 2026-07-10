@@ -347,7 +347,7 @@ async function downloadTarball(
 ): Promise<void> {
   const r = ref ?? 'HEAD'
   const url = `https://codeload.github.com/${owner}/${repo}/tar.gz/${encodeURIComponent(r)}`
-  const res = await fetch(url, { headers: { 'User-Agent': 'grok-harness' } })
+  const res = await fetch(url, { headers: { 'User-Agent': 'conduit' } })
   if (res.status === 404) {
     throw new Error('Repository or branch not found — check the URL (private repos need a token-based install).')
   }

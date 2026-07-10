@@ -1090,7 +1090,7 @@ export default function SettingsModal(props: {
                 <div>
                   <div className="setting-label">Software updates</div>
                   <div className="setting-help">
-                    {updateMsg ?? 'Check for a new version of Grok Harness'}
+                    {updateMsg ?? 'Check for a new version of Conduit'}
                   </div>
                 </div>
                 <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>

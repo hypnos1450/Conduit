@@ -61,7 +61,7 @@ export function clearAudit(): void {
 
 export function exportAuditMarkdown(): string {
   const events = listAudit(500)
-  const lines = ['# Grok Harness security audit', '', `Exported: ${new Date().toISOString()}`, '']
+  const lines = ['# Conduit security audit', '', `Exported: ${new Date().toISOString()}`, '']
   for (const e of events) {
     lines.push(
       `- **${new Date(e.ts).toISOString()}** · ${e.kind}${e.sessionId ? ` · session ${e.sessionId.slice(0, 8)}` : ''}: ${e.summary}`

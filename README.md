@@ -1,4 +1,4 @@
-# Grok Harness
+# Conduit
 
 A cross-platform desktop agent harness for xAI's **Grok 4.5** and **Grok 4.3** models, in the spirit of Claude Desktop / Codex Desktop. Sign in with your **SuperGrok or X Premium+ subscription** (OAuth) — no API key required — and put Grok to work on real projects: it reads, edits, and runs code on your machine with a permissioned tool loop.
 

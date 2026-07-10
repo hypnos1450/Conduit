@@ -98,7 +98,7 @@ export default function Sidebar(props: {
       <div className="sidebar-drag" />
       <div className="sidebar-header">
         <button className="brand" title="Home" onClick={props.onHome}>
-          <SparkLogo size={18} /> Grok Harness
+          <SparkLogo size={18} /> Conduit
         </button>
         <div className="sidebar-header-actions">
           <button

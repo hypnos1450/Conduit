@@ -633,7 +633,7 @@ const fetchPageTool: Tool = {
     const timeout = AbortSignal.timeout(20_000)
     const signal = AbortSignal.any([ctx.signal, timeout])
     const headers = {
-      'User-Agent': 'Mozilla/5.0 (compatible; GrokHarness/1.0)',
+      'User-Agent': 'Mozilla/5.0 (compatible; Conduit/1.0)',
       Accept: 'text/html,application/json,text/*;q=0.9,*/*;q=0.5'
     }
     // Manual redirects so every hop is re-checked against private IPs/DNS.

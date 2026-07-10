@@ -16,7 +16,7 @@ function createWindow(): void {
     height: 840,
     minWidth: 900,
     minHeight: 600,
-    title: 'Grok Harness',
+    title: 'Conduit',
     // Transparent under the vibrancy layer on macOS; solid elsewhere.
     backgroundColor: isMac ? '#00000000' : '#111113',
     titleBarStyle: isMac ? 'hiddenInset' : 'default',

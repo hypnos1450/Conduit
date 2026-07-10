@@ -1,8 +1,16 @@
 # Changelog
 
-All notable changes to Grok Harness. Each release on GitHub carries the notes
+All notable changes to Conduit. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
+
+## 0.5.1 — 2026-07-10
+
+**Rename to Conduit**
+
+- Product name, window title, installers, and UI branding are now **Conduit**
+- Bundle id `com.conduit.app`; npm package name `conduit`
+- GitHub release repo remains `hypnos1450/Grok-App` (auto-update feed unchanged)
 
 ## 0.5.0 — 2026-07-10
 
@@ -102,7 +110,7 @@ version tag is pushed.
   there; **Quick session** starts one in your home folder
 - Click a recent project to start a new session in that folder; click a recent
   session to jump back into it
-- Return to Home anytime via the Grok Harness brand in the sidebar or the home
+- Return to Home anytime via the Conduit brand in the sidebar or the home
   icon in the collapsed rail
 - The in-session welcome is now a compact starter-pill row instead of the large
   card grid, keeping the focus on the composer
