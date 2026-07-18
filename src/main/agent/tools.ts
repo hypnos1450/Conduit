@@ -7,6 +7,7 @@ import path from 'node:path'
 import { PlanStep } from '@shared/types'
 import { ApiToolDef } from './provider'
 import { newFilePreview, unifiedDiff } from './diff'
+import { parsePatch, applyHunks, PatchError } from './apply-patch'
 import { MemoryTarget, memoryStore } from './memory'
 import { skillStore } from './skills'
 import { spawnAgentTool } from './subagent'
@@ -326,6 +327,150 @@ function applyEdit(
   return {
     next: input.replace_all ? text.split(oldStr).join(newStr) : text.replace(oldStr, newStr),
     count
+  }
+}
+
+// -------------------------------------------------------------- apply_patch
+
+const APPLY_PATCH_DESC = `Edit files with a patch — the preferred way to create, modify, delete, or rename files. One call can touch several files. Format:
+
+*** Begin Patch
+*** Add File: path/new.ts       (each following line is prefixed with +)
++content line
+*** Update File: path/existing.ts
+*** Move to: path/renamed.ts     (optional — rename on update)
+@@ optional locator (a nearby function/class signature)
+ unchanged context line
+-removed line
++added line
+*** Delete File: path/old.ts
+*** End Patch
+
+Rules: paths are relative to the workspace. In Update hunks, include a few unchanged context lines around each change so it can be located; prefix context with a space, removals with -, additions with +. The call fails if a hunk's context can't be matched — do NOT re-read the file after a successful patch.`
+
+type PatchChange =
+  | { action: 'add'; abs: string; rel: string; after: string }
+  | { action: 'delete'; abs: string; rel: string; before: string }
+  | { action: 'update'; abs: string; rel: string; before: string; after: string }
+  | { action: 'move'; abs: string; rel: string; before: string; toAbs: string; toRel: string; after: string }
+
+/** Compute all file changes in memory. Returns an error string on any failure,
+ *  so nothing is written unless the whole patch applies. */
+async function computePatch(cwd: string, patchText: string): Promise<PatchChange[] | string> {
+  let ops
+  try {
+    ops = parsePatch(patchText)
+  } catch (e) {
+    return e instanceof PatchError ? e.message : String(e)
+  }
+  const changes: PatchChange[] = []
+  for (const op of ops) {
+    let abs: string
+    try {
+      abs = resolveInCwd(cwd, op.path)
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e)
+    }
+    if (op.kind === 'add') {
+      if (fs.existsSync(abs)) return `Add File: ${op.path} already exists — use Update File.`
+      changes.push({ action: 'add', abs, rel: op.path, after: op.content })
+    } else if (op.kind === 'delete') {
+      let before: string
+      try {
+        before = await fsp.readFile(abs, 'utf8')
+      } catch {
+        return `Delete File: ${op.path} does not exist.`
+      }
+      changes.push({ action: 'delete', abs, rel: op.path, before })
+    } else {
+      let before: string
+      try {
+        before = await fsp.readFile(abs, 'utf8')
+      } catch {
+        return `Update File: ${op.path} does not exist.`
+      }
+      let after: string
+      try {
+        after = applyHunks(before, op.hunks)
+      } catch (e) {
+        return e instanceof PatchError ? `Update File: ${op.path}: ${e.message}` : String(e)
+      }
+      if (op.moveTo) {
+        let toAbs: string
+        try {
+          toAbs = resolveInCwd(cwd, op.moveTo)
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e)
+        }
+        if (fs.existsSync(toAbs) && toAbs !== abs) return `Move to: ${op.moveTo} already exists.`
+        changes.push({ action: 'move', abs, rel: op.path, before, toAbs, toRel: op.moveTo, after })
+      } else {
+        changes.push({ action: 'update', abs, rel: op.path, before, after })
+      }
+    }
+  }
+  return changes
+}
+
+const applyPatchTool: Tool = {
+  name: 'apply_patch',
+  kind: 'write',
+  def: {
+    type: 'function',
+    function: {
+      name: 'apply_patch',
+      description: APPLY_PATCH_DESC,
+      parameters: {
+        type: 'object',
+        properties: { patch: { type: 'string', description: 'The patch text, from *** Begin Patch to *** End Patch' } },
+        required: ['patch']
+      }
+    }
+  },
+  summarize: (input) => {
+    const m = String(input.patch ?? '').match(/^\*\*\* (Add|Update|Delete) File: /gm)
+    return `apply_patch: ${m ? m.length : 0} file${m && m.length === 1 ? '' : 's'}`
+  },
+  preview: async (input, ctx) => {
+    const res = await computePatch(ctx.cwd, str(input, 'patch'))
+    if (typeof res === 'string') return undefined
+    return res
+      .map((c) => {
+        if (c.action === 'add') return `--- ${c.rel} (new)\n${newFilePreview(c.after)}`
+        if (c.action === 'delete') return `--- ${c.rel} (deleted)`
+        if (c.action === 'move') return `--- ${c.rel} → ${c.toRel}\n${unifiedDiff(c.before, c.after)}`
+        return `--- ${c.rel}\n${unifiedDiff(c.before, c.after)}`
+      })
+      .join('\n\n')
+  },
+  run: async (input, ctx) => {
+    const res = await computePatch(ctx.cwd, str(input, 'patch'))
+    if (typeof res === 'string') return { ok: false, output: res }
+    const done: string[] = []
+    for (const c of res) {
+      if (c.action === 'add') {
+        await ctx.onBeforeMutate?.(c.abs)
+        await fsp.mkdir(path.dirname(c.abs), { recursive: true })
+        await fsp.writeFile(c.abs, c.after, 'utf8')
+        done.push(`added ${c.rel}`)
+      } else if (c.action === 'delete') {
+        await ctx.onBeforeMutate?.(c.abs)
+        await fsp.rm(c.abs, { force: true })
+        done.push(`deleted ${c.rel}`)
+      } else if (c.action === 'update') {
+        await ctx.onBeforeMutate?.(c.abs)
+        await fsp.writeFile(c.abs, c.after, 'utf8')
+        done.push(`updated ${c.rel}`)
+      } else {
+        await ctx.onBeforeMutate?.(c.abs)
+        await ctx.onBeforeMutate?.(c.toAbs)
+        await fsp.mkdir(path.dirname(c.toAbs), { recursive: true })
+        await fsp.writeFile(c.toAbs, c.after, 'utf8')
+        if (c.toAbs !== c.abs) await fsp.rm(c.abs, { force: true })
+        done.push(`renamed ${c.rel} → ${c.toRel}`)
+      }
+    }
+    return { ok: true, output: `Applied patch: ${done.join(', ')}.` }
   }
 }
 
@@ -975,7 +1120,7 @@ const recallHistoryTool: Tool = {
 }
 
 export const TOOLS: Tool[] = [
-  bashTool, readFileTool, writeFileTool, editFileTool, listDirTool, globTool, grepTool,
+  bashTool, readFileTool, applyPatchTool, writeFileTool, editFileTool, listDirTool, globTool, grepTool,
   fetchPageTool, updatePlanTool, memoryTool, skillTool, sessionSearchTool, recallHistoryTool,
   spawnAgentTool
 ]
