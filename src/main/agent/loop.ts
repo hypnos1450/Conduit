@@ -63,7 +63,10 @@ export class AgentRun {
     private emit: (ev: AgentEvent) => void,
     private askPermission: PermissionResponder,
     /** Persist settings after global-allowlist changes */
-    private persistSettings: () => void = () => undefined
+    private persistSettings: () => void = () => undefined,
+    /** Ask the user a question mid-run (ask_user tool); resolves with their answer. */
+    private askQuestion: (q: { question: string; options?: string[] }) => Promise<string> = async () =>
+      ''
   ) {}
 
   cancel(): void {
@@ -491,7 +494,8 @@ export class AgentRun {
       onPlan: (steps) => {
         this.session.plan = steps
         this.emit({ type: 'plan', sessionId, steps })
-      }
+      },
+      askUser: (question, options) => this.askQuestion({ question, options })
     }
 
     let preview: string | undefined

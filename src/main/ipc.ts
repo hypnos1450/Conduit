@@ -61,6 +61,8 @@ const pendingPermissions = new Map<
   }
 >()
 
+const pendingQuestions = new Map<string, { sessionId: string; resolve: (answer: string) => void }>()
+
 function settingsFile(): string {
   return path.join(app.getPath('userData'), 'settings.json')
 }
@@ -336,6 +338,16 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       emit({ type: 'permission-request', sessionId, request })
     })
 
+  const bindQuestion = (
+    sessionId: string,
+    q: { question: string; options?: string[] }
+  ): Promise<string> =>
+    new Promise((resolve) => {
+      const requestId = crypto.randomBytes(10).toString('hex')
+      pendingQuestions.set(requestId, { sessionId, resolve })
+      emit({ type: 'user-question', sessionId, request: { requestId, sessionId, ...q } })
+    })
+
   handle(
     'agent:send',
     async (_e, sessionId: string, text: string, attachments?: Attachments) => {
@@ -357,7 +369,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         settings,
         emit,
         (request: PermissionRequest) => bindPermission(sessionId, request),
-        () => saveSettings(settings)
+        () => saveSettings(settings),
+        (q) => bindQuestion(sessionId, q)
       )
       runs.set(sessionId, run)
       void run.run(text, attachments).finally(() => runs.delete(sessionId))
@@ -393,7 +406,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       settings,
       emit,
       (request: PermissionRequest) => bindPermission(sessionId, request),
-      () => saveSettings(settings)
+      () => saveSettings(settings),
+      (q) => bindQuestion(sessionId, q)
     )
     runs.set(sessionId, run)
     void run.run(text, attachments).finally(() => runs.delete(sessionId))
@@ -441,6 +455,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       })
     }
   )
+  handle('agent:respondQuestion', (_e, requestId: string, answer: string, sessionId?: string) => {
+    if (!isValidId(requestId)) return
+    const pending = pendingQuestions.get(requestId)
+    if (!pending) return
+    if (sessionId && pending.sessionId !== sessionId) return
+    pendingQuestions.delete(requestId)
+    pending.resolve(typeof answer === 'string' ? answer.slice(0, 10_000) : '')
+  })
 
   // ---- memory
   handle('memory:entries', (_e, cwd?: string) => ({

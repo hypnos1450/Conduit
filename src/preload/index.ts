@@ -54,6 +54,8 @@ const api: HarnessApi = {
         globalAllow,
         sessionId
       ),
+    respondQuestion: (requestId, answer, sessionId) =>
+      ipcRenderer.invoke('agent:respondQuestion', requestId, answer, sessionId),
     onEvent: (cb: (ev: AgentEvent) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, ev: AgentEvent): void => cb(ev)
       ipcRenderer.on('agent:event', listener)

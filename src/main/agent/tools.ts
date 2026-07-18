@@ -26,6 +26,8 @@ export interface ToolContext {
   onBeforeMutate?: (absPath: string) => Promise<void>
   /** Called when the agent publishes a plan via update_plan */
   onPlan?: (steps: PlanStep[]) => void
+  /** Pause and ask the user a question; resolves with their answer ('' if declined). */
+  askUser?: (question: string, options?: string[]) => Promise<string>
 }
 
 export interface ToolResult {
@@ -275,6 +277,101 @@ const monitorTool: Tool = {
         finish(code === 0, `command exited with code ${code}`)
       })
     })
+}
+
+// -------------------------------------------------------------- diagnostics
+
+/** Detect the project's check commands from package.json scripts / tsconfig. */
+async function detectChecks(cwd: string): Promise<string[]> {
+  const cmds: string[] = []
+  try {
+    const pkg = JSON.parse(await fsp.readFile(path.join(cwd, 'package.json'), 'utf8'))
+    const scripts: Record<string, unknown> = pkg?.scripts ?? {}
+    for (const name of ['typecheck', 'type-check', 'tsc', 'lint', 'check']) {
+      if (typeof scripts[name] === 'string') cmds.push(`npm run ${name}`)
+    }
+  } catch {
+    // no package.json — fall through to tsconfig detection
+  }
+  if (!cmds.some((c) => /typecheck|type-check|tsc/.test(c)) && fs.existsSync(path.join(cwd, 'tsconfig.json'))) {
+    cmds.push('npx tsc --noEmit')
+  }
+  return cmds
+}
+
+/** Run a shell command to completion, collecting output (used by diagnostics). */
+function runShell(command: string, cwd: string, signal: AbortSignal, timeoutS: number): Promise<ToolResult> {
+  return new Promise((resolve) => {
+    const [bin, args] = shellInvocation(command)
+    const child = spawn(bin, args, { cwd, env: commandEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      child.kill('SIGKILL')
+    }, timeoutS * 1000)
+    const onAbort = (): void => {
+      child.kill('SIGKILL')
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    child.stdout.on('data', (d: Buffer) => (out += d.toString('utf8')))
+    child.stderr.on('data', (d: Buffer) => (out += d.toString('utf8')))
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      resolve({ ok: false, output: `Failed to start: ${err.message}` })
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      resolve({ ok: code === 0 && !timedOut, output: clamp(out).trim() + (timedOut ? `\n[timed out after ${timeoutS}s]` : '') })
+    })
+  })
+}
+
+const diagnosticsTool: Tool = {
+  name: 'diagnostics',
+  kind: 'command',
+  def: {
+    type: 'function',
+    function: {
+      name: 'diagnostics',
+      description:
+        "Run the project's type-checker and linter and report the errors and warnings — the fast way to surface type errors and lint issues after editing, before declaring work done. Auto-detects the check command from package.json scripts (typecheck, lint) or a tsconfig; pass `command` to run a specific one. Prefer this over a raw bash typecheck so results come back focused.",
+      parameters: {
+        type: 'object',
+        properties: {
+          command: {
+            type: 'string',
+            description: 'Optional: a specific check command to run instead of auto-detecting'
+          }
+        }
+      }
+    }
+  },
+  summarize: (input) => (input.command ? `diagnostics: ${input.command}` : 'diagnostics (auto-detect)'),
+  run: async (input, ctx) => {
+    let cmds: string[]
+    if (typeof input.command === 'string' && input.command.trim()) {
+      cmds = [input.command.trim()]
+    } else {
+      cmds = await detectChecks(ctx.cwd)
+      if (cmds.length === 0) {
+        return {
+          ok: false,
+          output:
+            'No type-check or lint command detected (no package.json typecheck/lint script and no tsconfig.json). Pass `command` with your project’s check command.'
+        }
+      }
+    }
+    const parts: string[] = []
+    let allOk = true
+    for (const cmd of cmds) {
+      const r = await runShell(cmd, ctx.cwd, ctx.signal, 300)
+      allOk = allOk && r.ok
+      parts.push(`$ ${cmd}\n${r.output || '(no output)'}${r.ok ? '\n[ok]' : ''}`)
+    }
+    return { ok: allOk, output: clamp(parts.join('\n\n')) }
+  }
 }
 
 // ---------------------------------------------------------------- read_file
@@ -1221,9 +1318,49 @@ const recallHistoryTool: Tool = {
   }
 }
 
+// ---------------------------------------------------------------- ask_user
+
+const askUserTool: Tool = {
+  name: 'ask_user',
+  kind: 'read', // interacting with the user is not a machine mutation — no approval gate
+  def: {
+    type: 'function',
+    function: {
+      name: 'ask_user',
+      description:
+        'Ask the user a question and wait for their answer before continuing. Use only when you genuinely need a decision or missing information to proceed — a choice between real options, a missing value, or confirmation of intent — never for things you can determine yourself by reading the workspace. Prefer offering concrete options. This is your only way to pause for input while running autonomously.',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: { type: 'string', description: 'The question to ask the user' },
+          options: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional suggested answers, shown as quick-reply buttons (max 6)'
+          }
+        },
+        required: ['question']
+      }
+    }
+  },
+  summarize: (input) => `Ask: ${String(input.question ?? '')}`,
+  run: async (input, ctx) => {
+    if (!ctx.askUser) return { ok: false, output: 'Cannot ask the user in this context.' }
+    const question = str(input, 'question')
+    const options = Array.isArray(input.options)
+      ? input.options.filter((o): o is string => typeof o === 'string').slice(0, 6)
+      : undefined
+    const answer = await ctx.askUser(question, options)
+    return {
+      ok: true,
+      output: answer.trim() ? `User answered: ${answer.trim()}` : 'User declined to answer; use your best judgment or stop and explain.'
+    }
+  }
+}
+
 export const TOOLS: Tool[] = [
-  bashTool, monitorTool, readFileTool, applyPatchTool, writeFileTool, editFileTool, listDirTool, globTool, grepTool,
-  fetchPageTool, updatePlanTool, memoryTool, skillTool, sessionSearchTool, recallHistoryTool,
+  bashTool, monitorTool, diagnosticsTool, readFileTool, applyPatchTool, writeFileTool, editFileTool, listDirTool, globTool, grepTool,
+  fetchPageTool, updatePlanTool, askUserTool, memoryTool, skillTool, sessionSearchTool, recallHistoryTool,
   spawnAgentTool
 ]
 
