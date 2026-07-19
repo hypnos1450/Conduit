@@ -47,7 +47,7 @@ jobs:
 
       # node-pty rebuild needs a C++ toolchain + Python (node-gyp).
       # @electron/rebuild@4 / node-abi require Node >= 22.12.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
