@@ -4,6 +4,45 @@ All notable changes to Conduit. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.5.7 — 2026-07-19
+
+**Custom agents**
+
+- **Define agent personas in Settings → Agents.** Each agent has a title, free-form
+  instructions, a chosen subset of your installed skills, a model, and a permission mode.
+- **Use them two ways.** Per session: pick an agent in the composer like you pick the
+  model — its instructions are injected into the system prompt, only its skills are visible
+  to it, and its model + permission mode take over (overriding the global mode). Delegated:
+  the main agent can hand a scoped read-only investigation to one **by name** via
+  `spawn_agent`, and the subagent runs with that agent's instructions, scoped skills (via a
+  new read-only `read_skill` tool), and model.
+- Agents are validated on every settings write (bounded fields, generated ids, deduped,
+  capped) and the persona block is placed after the cached `HARNESS_CORE` prefix so
+  prompt-caching is unaffected.
+
+## 0.5.6 — 2026-07-19
+
+**Language-server intelligence, versioned docs, and a dependency sweep**
+
+- **`lsp` tool — a real language-server client.** Per-file diagnostics in milliseconds
+  (no build), go-to-definition, find-references (resolves imports/scoping), hover, and
+  symbols, for TypeScript/JS, Python, Go, Rust, and C/C++ when a server is installed. A
+  server starts on demand per workspace, is reaped when idle, and is disposed on quit; a
+  hand-rolled JSON-RPC/stdio client, dependency-free. Verified live against clangd and
+  typescript-language-server.
+- **`docs` tool — versioned official documentation** from devdocs.io (JavaScript, Python,
+  Node, React, Go, Rust, …), so Grok checks an exact API/signature instead of guessing.
+  Docset indexes cache to disk for a week (instant, stale-if-offline); an exact search hit
+  returns the full page in one call. Model-supplied entry paths are sanitized.
+- **Security:** language servers are now spawned with a **credential-scrubbed environment**
+  (matching the shell tools), and a latent gap in the scrub regex is fixed — provider
+  prefixes were anchored so `AWS_SECRET_ACCESS_KEY` was never actually stripped.
+- **Dependencies (Dependabot):** react-markdown 9→10, the GitHub Actions bumps, and the
+  dev-dependencies group (eslint 10, `@types/node` 26, eslint-plugin-react-hooks 7,
+  vitest 4). The react-hooks 7 findings were resolved: a genuine
+  write-ref-during-render fix in `App.tsx`, and the aggressive `set-state-in-effect` rule
+  scoped out for legitimate async/imperative effects.
+
 ## 0.5.5 — 2026-07-16
 
 **Memory writes stop failing silently**

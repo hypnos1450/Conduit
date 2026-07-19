@@ -15,7 +15,11 @@ A cross-platform desktop agent harness for xAI's **Grok 4.5** and **Grok 4.3** m
   - *Grok Build / Grok 4.5* (500K context): plan-first workflow, small verified diffs, context-hygiene rules; background calls (session titles, self-review) automatically run at **low** reasoning effort so your quota goes to real work.
   - *Grok 4.3* (1M context): read-generously strategy, private-reasoning guidance, evidence-required claims to preserve its low-hallucination behavior.
 - **Prompt-cache discipline** — stable system-prompt prefix and append-only message history, so xAI's cached-input pricing hits on every agentic turn.
-- **Tools** — `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `fetch_page`, `update_plan`. Read-only tools run in parallel; mutations and commands are permission-gated (`ask` / `auto-edit` / `full-auto`) with per-session and global "always allow" plus allowlist learning.
+- **Tools** — `bash`, `read_file`, `apply_patch`, `write_file`, `list_dir`, `glob`, `grep`, `diagnostics`, `lsp`, `docs`, `monitor`, `fetch_page`, `update_plan`, `ask_user`. Read-only tools run in parallel; mutations and commands are permission-gated (`ask` / `auto-edit` / `full-auto`) with per-session and global "always allow" plus allowlist learning.
+- **`apply_patch` as the primary editor** — Grok edits with Codex-style patches (`*** Begin Patch` … add/update/delete/rename, `@@` hunks), the format the Grok models are tuned to produce. One call can touch several files; a bad hunk aborts the whole patch before anything is written. `write_file` (full rewrite) remains for new/heavily-rewritten files.
+- **Code intelligence (LSP)** — `lsp` starts a real language server on demand (TypeScript/JS, Python, Go, Rust, C/C++ when one is installed) for **per-file diagnostics in milliseconds**, go-to-definition, find-references (resolves imports/scoping — more precise than grep), hover signatures, and file symbols. `diagnostics` runs the project's own type-checker/linter; `monitor` runs a long command and watches until a regex/log line appears or it exits. Together these give Grok a tight edit → verify loop.
+- **Documentation lookup** — `docs` searches and reads **versioned official documentation** (devdocs.io: JavaScript, Python, Node, React, Go, Rust, CSS, PostgreSQL, …) so Grok checks an exact API/signature instead of recalling from memory. Docset indexes cache to disk for a week (instant, offline-tolerant); an exact hit returns the full page in one call.
+- **`ask_user`** — Grok can pause mid-run to ask a genuine decision (with quick-reply options) instead of guessing or stalling; the chat shows a question card and the loop resumes on your answer.
 - **Built-in xAI tools** — Grok's server-side `web_search` and `x_search` are enabled by default (toggle in Settings); cited sources render as chips under the answer. `fetch_page` then reads any surfaced page in full — readable-text extraction, size/time caps, and local/private-address blocking. The harness talks to the **Responses API** (`/v1/responses`).
 - **Live plan** — on multi-step tasks Grok publishes and maintains a checklist via `update_plan`; watch steps tick off live in the Tasks panel. Plans persist with the session.
 - **Right dock (Claude Desktop-style)** — a slim icon rail toggles four panels; open panels split their column, Terminal gets its own:
@@ -34,11 +38,12 @@ A cross-platform desktop agent harness for xAI's **Grok 4.5** and **Grok 4.3** m
 
 ## Production features
 
-- **Parallel subagents** — `spawn_agent` runs up to 8 read-only investigation subagents concurrently (they can `fetch_page` too). Toggle in Settings.
+- **Custom agents** — define agent personas in **Settings → Agents**, each with a title, instructions, a chosen subset of your installed skills, a model, and a permission mode. Pick one per session from the composer (its instructions shape the prompt, only its skills are visible to it, and its model + permission mode take over), or let the main agent delegate a scoped read-only investigation to one **by name** via `spawn_agent`.
+- **Parallel subagents** — `spawn_agent` runs up to 8 read-only investigation subagents concurrently (they can `fetch_page` and read `docs` too); pass a custom agent's name to run them with that agent's instructions, scoped skills, and model. Toggle in Settings.
 - **MCP client** — connect external stdio MCP servers in Settings → MCP, including per-server env vars (e.g. `GITHUB_TOKEN=...`); connected servers list their tools in the UI. Tools are namespaced `mcp__<server>__<tool>` and flow through the normal permission-gated loop.
 - **Git awareness** — branch/dirty status in the header and system prompt.
 - **Message controls** — edit-and-resend or fork a session from any message, regenerate the last response; **steering** — type while the agent runs to queue a mid-task course correction without cancelling.
-- **Tabbed Settings** — General / Agent / Memory / Skills / MCP / About.
+- **Tabbed Settings** — General / Agent / Agents / Memory / Skills / MCP / Security / About.
 - **Syntax highlighting**, token/cost meter, session export to markdown, sidebar search, and a native menu with standard shortcuts (⌘N / ⌘K / ⌘, / ⌘. / ⌘L).
 - **Auto-update** via GitHub Releases with an in-app "restart to update" prompt; **crash/error reporting** and rotated logs under `userData/logs` (Settings → About → Reveal logs).
 - **Hardening** — sandboxed renderer, IPC sender validation, all renderer permissions denied, a destructive-command guardrail on bash, injection scanning on memory and skill content, and external links always open in the system browser.
@@ -85,13 +90,16 @@ src/
     auth/oauth.ts          PKCE loopback flow against auth.x.ai
     auth/store.ts          safeStorage-encrypted credentials + refresh
     agent/provider.ts      SSE streaming client for api.x.ai (/v1/responses)
-    agent/tools.ts         tool implementations (incl. fetch_page, update_plan)
-    agent/profiles.ts      per-model tuning: prompts, budgets, reasoning effort
+    agent/tools.ts         tool implementations (apply_patch, lsp, docs, diagnostics, monitor, ask_user, …)
+    agent/apply-patch.ts   Codex-format patch parser + applier
+    agent/lsp/             language-server client (rpc, servers, client, manager)
+    agent/docs.ts          devdocs.io documentation client (cached)
+    agent/profiles.ts      per-model tuning: prompts, budgets, reasoning effort, custom-agent personas
     agent/loop.ts          the agent loop: model ↔ tools, permissions, compaction, retry
     agent/memory.ts        bounded memory stores + injection scanning
     agent/skills.ts        directory-per-skill store (SKILL.md + bundled files)
     agent/skill-install.ts GitHub/folder skill importer (bundles included)
-    agent/subagent.ts      parallel read-only investigation subagents
+    agent/subagent.ts      parallel read-only investigation subagents (incl. custom-agent delegation)
     agent/mcp.ts           MCP client (stdio)
   preload/index.ts         contextBridge (window.harness)
   renderer/                React UI: chat, sidebar, right dock, settings
