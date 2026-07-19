@@ -9,6 +9,7 @@ import { PlanStep } from '@shared/types'
 import { ApiToolDef } from './provider'
 import { newFilePreview, unifiedDiff } from './diff'
 import { parsePatch, applyHunks, PatchError } from './apply-patch'
+import { scrubCredentials } from './env'
 import { fetchDocPage, loadCatalog, loadIndex, resolveDocset, searchIndex } from './docs'
 import { lspManager } from './lsp/manager'
 import { LspDiagnostic, LspDocumentSymbol, LspLocation, LspLocationLink } from './lsp/client'
@@ -182,13 +183,7 @@ function shellInvocation(command: string): [string, string[]] {
 /** Env for spawned commands: inherit, but drop common credential vars so a
  *  confused model can't dump tokens via `env`/`printenv`. */
 function commandEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, CLICOLOR: '0', NO_COLOR: '1', GIT_PAGER: 'cat', PAGER: 'cat' }
-  for (const k of Object.keys(env)) {
-    if (/^(XAI_|OPENAI_|ANTHROPIC_|AWS_|GH_TOKEN|GITHUB_TOKEN|NPM_TOKEN|API_KEY|.*_API_KEY|.*_SECRET|.*_TOKEN)$/i.test(k)) {
-      delete env[k]
-    }
-  }
-  return env
+  return scrubCredentials({ ...process.env, CLICOLOR: '0', NO_COLOR: '1', GIT_PAGER: 'cat', PAGER: 'cat' })
 }
 
 // ---------------------------------------------------------------- monitor

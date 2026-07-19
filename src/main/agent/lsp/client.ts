@@ -3,6 +3,7 @@
 import { ChildProcess, spawn } from 'node:child_process'
 import fsp from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
+import { scrubCredentials } from '../env'
 import { JsonRpcConnection } from './rpc'
 import { ServerSpec, languageIdFor } from './servers'
 
@@ -73,6 +74,9 @@ export class LspClient {
     this.child = spawn(invocation.command, invocation.args, {
       cwd: root,
       stdio: ['pipe', 'pipe', 'pipe'],
+      // Never hand the app's/user's API tokens to a (possibly workspace-
+      // provided) language server — same scrub the shell tools apply.
+      env: scrubCredentials(process.env),
       // npm shims on Windows are .cmd scripts and need a shell to execute.
       shell: /\.(cmd|bat)$/i.test(invocation.command)
     })
