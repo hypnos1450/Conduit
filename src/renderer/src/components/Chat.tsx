@@ -10,7 +10,8 @@ import {
   ReasoningEffort,
   SessionMeta,
   Settings,
-  Usage
+  Usage,
+  UserQuestion
 } from '@shared/types'
 import ItemView, { DiffView } from './Items'
 import {
@@ -111,6 +112,8 @@ export default function Chat(props: {
   const [checkpoints, setCheckpoints] = useState<CheckpointInfo[]>([])
   const [running, setRunning] = useState(false)
   const [permission, setPermission] = useState<PermissionRequest | null>(null)
+  const [question, setQuestion] = useState<UserQuestion | null>(null)
+  const [answer, setAnswer] = useState('')
   const [usage, setUsage] = useState<Usage | null>(null)
   const [git, setGit] = useState<GitStatus | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
@@ -201,6 +204,7 @@ export default function Chat(props: {
         case 'turn-end':
           setRunning(false)
           setPermission(null)
+          setQuestion(null)
           void window.harness.sessions.load(session.id).then((d) => d && setCheckpoints(d.checkpoints))
           void window.harness.sessions.gitStatus(session.id).then(setGit)
           break
@@ -243,6 +247,10 @@ export default function Chat(props: {
           break
         case 'permission-request':
           setPermission(ev.request)
+          break
+        case 'user-question':
+          setAnswer('')
+          setQuestion(ev.request)
           break
         case 'usage':
           setUsage(ev.usage)
@@ -445,6 +453,13 @@ export default function Chat(props: {
       session?.id ?? permission.sessionId
     )
     setPermission(null)
+  }
+
+  const respondQuestion = (text: string): void => {
+    if (!question) return
+    void window.harness.agent.respondQuestion(question.requestId, text, session?.id ?? question.sessionId)
+    setQuestion(null)
+    setAnswer('')
   }
 
   const restore = useCallback(
@@ -703,6 +718,55 @@ export default function Chat(props: {
             </button>
             <button className="btn danger" onClick={() => respondPermission(false)}>
               Deny
+            </button>
+          </div>
+        </div>
+      )}
+
+      {question && (
+        <div className="permission-bar">
+          <div className="permission-title">
+            <span className="permission-icon">
+              <WarnIcon size={16} />
+            </span>
+            <span>Grok has a question</span>
+          </div>
+          <div className="permission-cmd">{question.question}</div>
+          {question.options && question.options.length > 0 && (
+            <div className="permission-actions">
+              {question.options.map((opt) => (
+                <button key={opt} className="btn" onClick={() => respondQuestion(opt)}>
+                  {opt}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="composer" style={{ marginTop: 8 }}>
+            <textarea
+              className="composer-input"
+              rows={1}
+              placeholder="Type your answer…"
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  if (answer.trim()) respondQuestion(answer.trim())
+                }
+              }}
+              autoFocus
+            />
+          </div>
+          <div className="permission-actions">
+            <button
+              className="btn primary"
+              disabled={!answer.trim()}
+              onClick={() => respondQuestion(answer.trim())}
+            >
+              Answer
+            </button>
+            <button className="btn" onClick={() => respondQuestion('')}>
+              Skip
             </button>
           </div>
         </div>
