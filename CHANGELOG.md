@@ -4,6 +4,14 @@ All notable changes to Conduit. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.5.8 — 2026-07-19
+
+**In-UI logo matches the app icon**
+
+- The sidebar, Home, and chat-welcome brand mark still drew the old four-point spark while
+  the app-bundle icon had been updated to the Monogram C. The in-UI mark is now the same C:
+  an open arc with a cyan→periwinkle gradient and a glowing node at its top terminal.
+
 ## 0.5.7 — 2026-07-19
 
 **Custom agents**
