@@ -4,10 +4,13 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { PlanStep } from '@shared/types'
 import { ApiToolDef } from './provider'
 import { newFilePreview, unifiedDiff } from './diff'
 import { parsePatch, applyHunks, PatchError } from './apply-patch'
+import { lspManager } from './lsp/manager'
+import { LspDiagnostic, LspDocumentSymbol, LspLocation, LspLocationLink } from './lsp/client'
 import { MemoryTarget, memoryStore } from './memory'
 import { skillStore } from './skills'
 import { spawnAgentTool } from './subagent'
@@ -371,6 +374,185 @@ const diagnosticsTool: Tool = {
       parts.push(`$ ${cmd}\n${r.output || '(no output)'}${r.ok ? '\n[ok]' : ''}`)
     }
     return { ok: allOk, output: clamp(parts.join('\n\n')) }
+  }
+}
+
+// --------------------------------------------------------------------- lsp
+
+const SEVERITY_NAMES = ['', 'error', 'warning', 'info', 'hint']
+// LSP SymbolKind 1-26.
+const SYMBOL_KINDS = [
+  '', 'file', 'module', 'namespace', 'package', 'class', 'method', 'property',
+  'field', 'constructor', 'enum', 'interface', 'function', 'variable',
+  'constant', 'string', 'number', 'boolean', 'array', 'object', 'key', 'null',
+  'enum-member', 'struct', 'event', 'operator', 'type-parameter'
+]
+
+function lspRel(cwd: string, uri: string): string {
+  try {
+    const p = fileURLToPath(uri)
+    const rel = path.relative(cwd, p)
+    return rel.startsWith('..') ? p : rel
+  } catch {
+    return uri
+  }
+}
+
+function formatLspDiagnostics(diags: LspDiagnostic[]): string {
+  return [...diags]
+    .sort((a, b) => a.range.start.line - b.range.start.line)
+    .map((d) => {
+      const sev = SEVERITY_NAMES[d.severity ?? 1] || 'error'
+      const code = d.code !== undefined ? ` [${d.source ? `${d.source}/` : ''}${d.code}]` : d.source ? ` [${d.source}]` : ''
+      return `${d.range.start.line + 1}:${d.range.start.character + 1} ${sev}: ${d.message.replace(/\s+/g, ' ')}${code}`
+    })
+    .join('\n')
+}
+
+/** Location | Location[] | LocationLink[] | null → a uniform list. */
+function normalizeLocations(res: unknown): LspLocation[] {
+  if (!res) return []
+  const arr = Array.isArray(res) ? res : [res]
+  const out: LspLocation[] = []
+  for (const item of arr) {
+    const link = item as LspLocationLink & LspLocation
+    if (typeof link.uri === 'string' && link.range) out.push({ uri: link.uri, range: link.range })
+    else if (typeof link.targetUri === 'string')
+      out.push({ uri: link.targetUri, range: link.targetSelectionRange ?? link.targetRange })
+  }
+  return out
+}
+
+/** Format locations as rel/path:line:col with the target source line inlined. */
+async function formatLocations(cwd: string, locs: LspLocation[], cap: number): Promise<string> {
+  const lineCache = new Map<string, string[]>()
+  const parts: string[] = []
+  for (const loc of locs.slice(0, cap)) {
+    const rel = lspRel(cwd, loc.uri)
+    const lineNo = loc.range.start.line
+    let snippet = ''
+    try {
+      let lines = lineCache.get(loc.uri)
+      if (!lines) {
+        lines = (await fsp.readFile(fileURLToPath(loc.uri), 'utf8')).split('\n')
+        lineCache.set(loc.uri, lines)
+      }
+      snippet = (lines[lineNo] ?? '').trim().slice(0, 200)
+    } catch {
+      // unreadable target (generated file, lib) — location alone still helps
+    }
+    parts.push(`${rel}:${lineNo + 1}:${loc.range.start.character + 1}${snippet ? `  ${snippet}` : ''}`)
+  }
+  if (locs.length > cap) parts.push(`… ${locs.length - cap} more`)
+  return parts.join('\n')
+}
+
+/** Flatten LSP hover contents (string | MarkedString | MarkupContent | array). */
+function flattenHover(contents: unknown): string {
+  if (typeof contents === 'string') return contents
+  if (Array.isArray(contents)) return contents.map(flattenHover).filter(Boolean).join('\n')
+  if (contents && typeof contents === 'object') {
+    const c = contents as { value?: unknown; language?: unknown }
+    if (typeof c.value === 'string') return c.value
+  }
+  return ''
+}
+
+function formatSymbols(symbols: LspDocumentSymbol[], depth = 0): string[] {
+  const out: string[] = []
+  for (const s of symbols.slice(0, 200)) {
+    const line = (s.selectionRange ?? s.range ?? s.location?.range)?.start.line
+    const kind = SYMBOL_KINDS[s.kind] || 'symbol'
+    out.push(`${'  '.repeat(depth)}${s.name} (${kind})${line !== undefined ? ` :${line + 1}` : ''}`)
+    if (s.children?.length) out.push(...formatSymbols(s.children, depth + 1))
+  }
+  return out
+}
+
+const lspTool: Tool = {
+  name: 'lsp',
+  kind: 'read',
+  def: {
+    type: 'function',
+    function: {
+      name: 'lsp',
+      description:
+        'Query a language server for precise code intelligence. Actions: "diagnostics" — type/syntax errors for ONE file, instantly, without running a build (use after editing a file); ' +
+        '"definition" — jump to where the symbol at line/column is defined; "references" — every place that symbol is used (more precise than grep: resolves imports and scoping); ' +
+        '"hover" — type signature and docs for the symbol at line/column; "symbols" — an outline of the file; "status" — which servers are running. ' +
+        'Positions are 1-based and must point AT the symbol name. Supports TypeScript/JavaScript, Python, Go, Rust, C/C++ when a language server is installed; ' +
+        'the first call per language starts its server, so it may be slow while the project indexes. For project-wide checks use the diagnostics tool instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['diagnostics', 'definition', 'references', 'hover', 'symbols', 'status']
+          },
+          path: { type: 'string', description: 'File path relative to the workspace (all actions except status)' },
+          line: { type: 'number', description: '1-based line of the symbol (definition/references/hover)' },
+          column: { type: 'number', description: '1-based column of the symbol (definition/references/hover)' }
+        },
+        required: ['action']
+      }
+    }
+  },
+  summarize: (input) => {
+    const pos = input.line ? `:${input.line}${input.column ? `:${input.column}` : ''}` : ''
+    return `lsp ${input.action}${input.path ? ` ${input.path}${pos}` : ''}`
+  },
+  run: async (input, ctx) => {
+    const action = String(input.action ?? '')
+    if (action === 'status') {
+      const lines = lspManager.status()
+      return { ok: true, output: lines.length ? lines.join('\n') : 'No language servers running. One starts automatically on the first lsp call for a supported file.' }
+    }
+    const abs = resolveInCwd(ctx.cwd, str(input, 'path'))
+    if (!fs.existsSync(abs)) return { ok: false, output: `File not found: ${input.path}` }
+    let client
+    try {
+      client = await lspManager.clientFor(ctx.cwd, abs)
+    } catch (e) {
+      return { ok: false, output: e instanceof Error ? e.message : String(e) }
+    }
+    const { uri, diagnosticsSettled } = await client.syncFile(abs)
+
+    if (action === 'diagnostics') {
+      if (diagnosticsSettled) await diagnosticsSettled
+      const diags = client.diagnosticsFor(uri)
+      if (!diags.length) {
+        return { ok: true, output: `No diagnostics for ${input.path} — clean (or the server is still indexing; re-run in a moment to confirm).` }
+      }
+      return { ok: true, output: clamp(formatLspDiagnostics(diags)) }
+    }
+    if (action === 'symbols') {
+      const res = (await client.documentSymbols(uri)) as LspDocumentSymbol[] | null
+      const lines = formatSymbols(Array.isArray(res) ? res : [])
+      return { ok: true, output: lines.length ? clamp(lines.join('\n')) : 'No symbols reported for this file.' }
+    }
+
+    // Position-based actions.
+    if (!input.line) return { ok: false, output: `Action "${action}" needs \`line\` (and usually \`column\`) pointing at the symbol.` }
+    const position = {
+      line: Math.max(0, Math.trunc(Number(input.line)) - 1),
+      character: Math.max(0, (Math.trunc(Number(input.column)) || 1) - 1)
+    }
+    if (action === 'hover') {
+      const res = (await client.hover(uri, position)) as { contents?: unknown } | null
+      const text = flattenHover(res?.contents).trim()
+      return { ok: true, output: text ? clamp(text) : `No hover info at ${input.path}:${input.line}:${input.column ?? 1} — check the position points at a symbol.` }
+    }
+    if (action === 'definition') {
+      const locs = normalizeLocations(await client.definition(uri, position))
+      if (!locs.length) return { ok: true, output: `No definition found from ${input.path}:${input.line}:${input.column ?? 1}.` }
+      return { ok: true, output: clamp(await formatLocations(ctx.cwd, locs, 20)) }
+    }
+    if (action === 'references') {
+      const locs = normalizeLocations(await client.references(uri, position))
+      if (!locs.length) return { ok: true, output: `No references found from ${input.path}:${input.line}:${input.column ?? 1}.` }
+      return { ok: true, output: clamp(`${locs.length} reference${locs.length === 1 ? '' : 's'}:\n${await formatLocations(ctx.cwd, locs, 80)}`) }
+    }
+    return { ok: false, output: `Unknown action "${action}". Use diagnostics, definition, references, hover, symbols, or status.` }
   }
 }
 
@@ -1293,7 +1475,7 @@ const askUserTool: Tool = {
 }
 
 export const TOOLS: Tool[] = [
-  bashTool, monitorTool, diagnosticsTool, readFileTool, applyPatchTool, writeFileTool, listDirTool, globTool, grepTool,
+  bashTool, monitorTool, diagnosticsTool, lspTool, readFileTool, applyPatchTool, writeFileTool, listDirTool, globTool, grepTool,
   fetchPageTool, updatePlanTool, askUserTool, memoryTool, skillTool, sessionSearchTool, recallHistoryTool,
   spawnAgentTool
 ]
@@ -1302,7 +1484,7 @@ export const toolByName = new Map(TOOLS.map((t) => [t.name, t]))
 
 /** Read-only tools handed to subagents (no writes, shell, memory, or recursion). */
 export function subagentTools(): Tool[] {
-  return [readFileTool, listDirTool, globTool, grepTool, sessionSearchTool, fetchPageTool]
+  return [readFileTool, listDirTool, globTool, grepTool, lspTool, sessionSearchTool, fetchPageTool]
 }
 
 export function toolDefs(opts?: { memory?: boolean }): ApiToolDef[] {

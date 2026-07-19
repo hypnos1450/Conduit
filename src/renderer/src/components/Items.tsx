@@ -182,6 +182,7 @@ function hostOf(url: string): string {
 /** A small glyph per tool family. Plain unicode keeps it dependency-free. */
 function toolIcon(name: string): string {
   if (name === 'bash') return '❯_'
+  if (name === 'lsp') return '⌖'
   if (name === 'read_file') return '◫'
   if (name === 'write_file' || name === 'apply_patch') return '✎'
   if (name === 'list_dir') return '🗀'
@@ -302,6 +303,10 @@ function summarize(item: Extract<ChatItem, { kind: 'tool' }>): string {
       ].map((m) => m[1].trim())
       if (paths.length <= 1) return paths[0] ?? 'patch'
       return `${paths.length} files: ${paths.slice(0, 3).join(', ')}${paths.length > 3 ? '…' : ''}`
+    }
+    case 'lsp': {
+      const pos = input.line ? `:${input.line}${input.column ? `:${input.column}` : ''}` : ''
+      return `${input.action ?? ''}${input.path ? ` ${input.path}${pos}` : ''}`.trim()
     }
     case 'glob':
     case 'grep':

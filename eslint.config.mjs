@@ -14,7 +14,9 @@ const NODE_GLOBALS = {
   exports: 'writable',
   __dirname: 'readonly',
   __filename: 'readonly',
-  Buffer: 'readonly'
+  Buffer: 'readonly',
+  setTimeout: 'readonly',
+  clearTimeout: 'readonly'
 }
 
 export default tseslint.config(
@@ -41,8 +43,8 @@ export default tseslint.config(
     }
   },
   {
-    // Build/config scripts are CommonJS Node, not browser or ESM.
-    files: ['scripts/**/*.{js,cjs}', 'build/**/*.{js,cjs}', '*.cjs'],
+    // Build/config scripts and test fixtures are CommonJS Node, not browser or ESM.
+    files: ['scripts/**/*.{js,cjs}', 'build/**/*.{js,cjs}', 'test/fixtures/**/*.cjs', '*.cjs'],
     languageOptions: { sourceType: 'commonjs', globals: NODE_GLOBALS },
     rules: {
       '@typescript-eslint/no-require-imports': 'off'
