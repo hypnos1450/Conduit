@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PlanStep } from '@shared/types'
+import { CustomAgent, PlanStep } from '@shared/types'
 import { ApiToolDef } from './provider'
 import { newFilePreview, unifiedDiff } from './diff'
 import { parsePatch, applyHunks, PatchError } from './apply-patch'
@@ -33,6 +33,8 @@ export interface ToolContext {
   onPlan?: (steps: PlanStep[]) => void
   /** Pause and ask the user a question; resolves with their answer ('' if declined). */
   askUser?: (question: string, options?: string[]) => Promise<string>
+  /** User-defined agent personas, so spawn_agent can delegate to one by name. */
+  customAgents?: CustomAgent[]
 }
 
 export interface ToolResult {
@@ -1353,6 +1355,37 @@ const skillTool: Tool = {
   }
 }
 
+// Read-only skill reader for subagents: a custom agent's spawned investigators
+// may consult (but never write) the skills scoped to that agent. Kept separate
+// from `skill` because subagents run tools without the permission gate.
+const skillReadTool: Tool = {
+  name: 'read_skill',
+  kind: 'read',
+  def: {
+    type: 'function',
+    function: {
+      name: 'read_skill',
+      description:
+        'Read the full playbook of one of your available skills by name (from the skills index in your prompt). Read-only.',
+      parameters: {
+        type: 'object',
+        properties: { name: { type: 'string', description: 'The skill name (kebab-case slug)' } },
+        required: ['name']
+      }
+    }
+  },
+  summarize: (input) => `Read skill: ${input.name}`,
+  run: async (input) => {
+    const skill = skillStore.read(str(input, 'name'))
+    if (!skill) return { ok: false, output: `No skill named "${input.name}". Check the skills index.` }
+    let output = `# ${skill.meta.name}\n${skill.meta.description}\n\n${skill.content}`
+    if (skill.files.length) {
+      output += `\n\n## Bundled files (in ${skill.dir})\n${skill.files.map((f) => `- ${f}`).join('\n')}`
+    }
+    return { ok: true, output: clamp(output) }
+  }
+}
+
 // ---------------------------------------------------------- session_search
 
 const sessionSearchTool: Tool = {
@@ -1561,9 +1594,11 @@ export const TOOLS: Tool[] = [
 
 export const toolByName = new Map(TOOLS.map((t) => [t.name, t]))
 
-/** Read-only tools handed to subagents (no writes, shell, memory, or recursion). */
-export function subagentTools(): Tool[] {
-  return [readFileTool, listDirTool, globTool, grepTool, lspTool, sessionSearchTool, fetchPageTool, docsTool]
+/** Read-only tools handed to subagents (no writes, shell, memory, or recursion).
+ *  `withSkills` adds the read-only skill reader for delegated custom agents. */
+export function subagentTools(withSkills = false): Tool[] {
+  const base = [readFileTool, listDirTool, globTool, grepTool, lspTool, sessionSearchTool, fetchPageTool, docsTool]
+  return withSkills ? [...base, skillReadTool] : base
 }
 
 export function toolDefs(opts?: { memory?: boolean }): ApiToolDef[] {

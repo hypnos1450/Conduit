@@ -19,6 +19,23 @@ export type PermissionMode = 'ask' | 'auto-edit' | 'full-auto' | 'plan-only'
 /** Named risk profiles map to permission + feature defaults */
 export type AgentProfileId = 'careful' | 'balanced' | 'yolo'
 
+/**
+ * A user-defined agent persona. Selecting one for a session injects its
+ * `instructions` into the system prompt, scopes the visible skills to `skills`,
+ * and applies its `model` + `permissionMode`. The main agent can also delegate
+ * to one by name via spawn_agent (read-only investigation).
+ */
+export interface CustomAgent {
+  id: string
+  name: string
+  /** Role/behavior instructions injected into the system prompt */
+  instructions: string
+  /** Skill names (from installed skills) this agent may use; [] = none */
+  skills: string[]
+  model: ModelId
+  permissionMode: PermissionMode
+}
+
 export type UpdateChannel = 'latest' | 'beta'
 
 export interface AuthState {
@@ -72,6 +89,8 @@ export interface Settings {
   testCommand: string
   /** Reduced motion / a11y */
   reducedMotion: boolean
+  /** User-defined agent personas (title, instructions, scoped skills, model, mode) */
+  customAgents: CustomAgent[]
 }
 
 export interface McpServerConfig {
@@ -139,7 +158,8 @@ export const DEFAULT_SETTINGS: Settings = {
   updateChannel: 'latest',
   auditLogEnabled: true,
   testCommand: '',
-  reducedMotion: false
+  reducedMotion: false,
+  customAgents: []
 }
 
 export const AGENT_PROFILES: {
@@ -191,6 +211,8 @@ export interface SessionMeta {
   digest?: string
   /** Plan-only mode for this session (overrides settings.permissionMode) */
   planOnly?: boolean
+  /** Selected custom agent persona for this session (id into settings.customAgents) */
+  agentId?: string
 }
 
 /** One step of the agent-maintained live plan (update_plan tool) */
@@ -581,6 +603,8 @@ export interface HarnessApi {
     delete(id: string): Promise<void>
     rename(id: string, title: string): Promise<void>
     setModel(id: string, model: ModelId): Promise<void>
+    /** Select a custom agent persona for this session (null = default) */
+    setAgent(id: string, agentId: string | null): Promise<void>
     /** Set reasoning depth for this session (null = API default) */
     setEffort(id: string, effort: ReasoningEffort | null): Promise<void>
     restoreCheckpoint(sessionId: string, itemId: string): Promise<{ restored: number }>

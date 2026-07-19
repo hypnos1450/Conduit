@@ -42,6 +42,10 @@ export interface SystemPromptOpts {
   planOnly?: boolean
   /** Hint for post-edit verification command */
   testCommand?: string
+  /** Active custom-agent persona for this session (name + instructions) */
+  agentRole?: { name: string; instructions: string }
+  /** User-defined agents the main agent may delegate to via spawn_agent */
+  spawnableAgents?: { name: string; instructions: string }[]
 }
 
 // Shared harness contract. Kept identical and FIRST across both models so the
@@ -154,6 +158,22 @@ The user enabled plan-only mode for this session.
 
 function assemble(core: string[], opts: SystemPromptOpts): string {
   const parts = [...core]
+  // Placed after the cached core/addendum prefix so the prompt-cache prefix is
+  // unaffected; this block is per-session (varies with the selected agent).
+  if (opts.agentRole) {
+    parts.push(
+      `# Active agent: ${opts.agentRole.name}\n` +
+        `You are operating as the "${opts.agentRole.name}" agent this session. These role instructions take precedence over your general defaults where they conflict (but never over the safety rules above):\n` +
+        opts.agentRole.instructions.trim()
+    )
+  }
+  if (opts.spawnableAgents?.length) {
+    parts.push(
+      `# Agents you can delegate to\n` +
+        `You may hand a scoped, read-only investigation to one of these user-defined agents by setting the \`agent\` field to its exact name in a spawn_agent task. Each runs with its own instructions and skills:\n` +
+        opts.spawnableAgents.map((a) => `- ${a.name}: ${a.instructions.replace(/\s+/g, ' ').slice(0, 160)}`).join('\n')
+    )
+  }
   if (opts.planOnly) parts.push(PLAN_ONLY_GUIDANCE)
   if (opts.memoryEnabled) {
     parts.push(MEMORY_GUIDANCE)

@@ -1,5 +1,6 @@
 import { JSX, useCallback, useEffect, useState } from 'react'
 import {
+  CustomAgent,
   McpInstallPreview,
   McpServerConfig,
   McpServerStatus,
@@ -14,7 +15,14 @@ import {
 } from '@shared/types'
 import { CheckIcon, XIcon } from './Icons'
 
-const TABS = ['General', 'Agent', 'Memory', 'Skills', 'MCP', 'Security', 'About'] as const
+const TABS = ['General', 'Agent', 'Agents', 'Memory', 'Skills', 'MCP', 'Security', 'About'] as const
+
+const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
+  ask: 'Ask before each action',
+  'auto-edit': 'Auto-approve edits, ask for commands',
+  'full-auto': 'Full auto (no prompts)',
+  'plan-only': 'Plan only (no changes)'
+}
 type Tab = (typeof TABS)[number]
 
 function MemorySection({ cwd }: { cwd?: string }): JSX.Element {
@@ -620,6 +628,183 @@ function McpSection(props: {
   )
 }
 
+function AgentsSection(props: {
+  settings: Settings
+  update: (patch: Partial<Settings>) => Promise<void>
+}): JSX.Element {
+  const [skills, setSkills] = useState<SkillMeta[]>([])
+  const [draft, setDraft] = useState<CustomAgent | null>(null)
+  const agents = props.settings.customAgents ?? []
+
+  useEffect(() => {
+    void window.harness.skills.list().then(setSkills)
+  }, [])
+
+  const startNew = (): void =>
+    setDraft({
+      id: crypto.randomUUID(),
+      name: '',
+      instructions: '',
+      skills: [],
+      model: props.settings.defaultModel,
+      permissionMode: 'ask'
+    })
+
+  const saveDraft = async (): Promise<void> => {
+    if (!draft) return
+    const name = draft.name.trim()
+    if (!name) return
+    const others = agents.filter((a) => a.id !== draft.id)
+    await props.update({ customAgents: [...others, { ...draft, name }] })
+    setDraft(null)
+  }
+
+  const remove = async (id: string): Promise<void> => {
+    await props.update({ customAgents: agents.filter((a) => a.id !== id) })
+    if (draft?.id === id) setDraft(null)
+  }
+
+  const toggleSkill = (name: string): void =>
+    setDraft((d) =>
+      d
+        ? { ...d, skills: d.skills.includes(name) ? d.skills.filter((s) => s !== name) : [...d.skills, name] }
+        : d
+    )
+
+  return (
+    <div className="memory-section">
+      {!draft && (
+        <>
+          {agents.length === 0 && (
+            <div className="setting-help" style={{ marginBottom: 10 }}>
+              No custom agents yet. Create one to give a session a focused role, a scoped set of
+              skills, and its own model and permission mode. You can switch to it from the composer,
+              and the main agent can delegate read-only investigation to it.
+            </div>
+          )}
+          <div className="agent-list">
+            {agents.map((a) => (
+              <div key={a.id} className="agent-card">
+                <div className="agent-card-main">
+                  <div className="agent-card-name">{a.name}</div>
+                  <div className="setting-help">
+                    {MODELS.find((m) => m.id === a.model)?.label ?? a.model} · {a.permissionMode} ·{' '}
+                    {a.skills.length} skill{a.skills.length === 1 ? '' : 's'}
+                  </div>
+                  {a.instructions.trim() && (
+                    <div className="agent-card-desc">{a.instructions.trim().slice(0, 140)}</div>
+                  )}
+                </div>
+                <div className="agent-card-actions">
+                  <button className="mini-btn" onClick={() => setDraft({ ...a })}>
+                    Edit
+                  </button>
+                  <button className="mini-btn danger" onClick={() => void remove(a.id)}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button className="mini-btn" style={{ marginTop: 10 }} onClick={startNew}>
+            + New agent
+          </button>
+        </>
+      )}
+
+      {draft && (
+        <div className="agent-form">
+          <label className="agent-field">
+            <span className="setting-label">Title</span>
+            <input
+              type="text"
+              value={draft.name}
+              placeholder="e.g. Code Reviewer"
+              maxLength={60}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+            />
+          </label>
+
+          <label className="agent-field">
+            <span className="setting-label">Instructions</span>
+            <span className="setting-help">
+              The role and behavior for this agent — injected into its system prompt.
+            </span>
+            <textarea
+              rows={5}
+              value={draft.instructions}
+              placeholder="You focus on security and correctness. Be terse. Always run the tests before concluding…"
+              maxLength={8000}
+              onChange={(e) => setDraft({ ...draft, instructions: e.target.value })}
+            />
+          </label>
+
+          <div className="agent-field-row">
+            <label className="agent-field">
+              <span className="setting-label">Model</span>
+              <select
+                value={draft.model}
+                onChange={(e) => setDraft({ ...draft, model: e.target.value as ModelId })}
+              >
+                {MODELS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="agent-field">
+              <span className="setting-label">Permission mode</span>
+              <select
+                value={draft.permissionMode}
+                onChange={(e) =>
+                  setDraft({ ...draft, permissionMode: e.target.value as PermissionMode })
+                }
+              >
+                {(Object.keys(PERMISSION_MODE_LABELS) as PermissionMode[]).map((m) => (
+                  <option key={m} value={m}>
+                    {PERMISSION_MODE_LABELS[m]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="agent-field">
+            <span className="setting-label">Skills</span>
+            <span className="setting-help">
+              {skills.length === 0
+                ? 'No skills installed yet. Install skills in the Skills tab, then choose them here.'
+                : 'Only the selected skills are visible to this agent (others are hidden from it).'}
+            </span>
+            <div className="agent-skill-grid">
+              {skills.map((s) => (
+                <label key={s.name} className="agent-skill" title={s.description}>
+                  <input
+                    type="checkbox"
+                    checked={draft.skills.includes(s.name)}
+                    onChange={() => toggleSkill(s.name)}
+                  />
+                  <span>{s.name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="agent-form-actions">
+            <button className="mini-btn" disabled={!draft.name.trim()} onClick={() => void saveDraft()}>
+              Save agent
+            </button>
+            <button className="mini-btn" onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function SettingsModal(props: {
   settings: Settings
   email?: string
@@ -945,6 +1130,20 @@ export default function SettingsModal(props: {
                 </div>
               </div>
               <SkillsSection />
+            </div>
+          )}
+
+          {tab === 'Agents' && (
+            <div className="setting-row" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+              <div style={{ marginBottom: 6 }}>
+                <div className="setting-label">Custom agents</div>
+                <div className="setting-help">
+                  Define agent personas with their own instructions, skills, model, and permission
+                  mode. Pick one per session from the composer, or let the main agent delegate
+                  read-only investigation to it.
+                </div>
+              </div>
+              <AgentsSection settings={props.settings} update={update} />
             </div>
           )}
 

@@ -26,6 +26,7 @@ const api: HarnessApi = {
     delete: (id) => ipcRenderer.invoke('sessions:delete', id),
     rename: (id, title) => ipcRenderer.invoke('sessions:rename', id, title),
     setModel: (id, model: ModelId) => ipcRenderer.invoke('sessions:setModel', id, model),
+    setAgent: (id, agentId) => ipcRenderer.invoke('sessions:setAgent', id, agentId),
     setEffort: (id, effort) => ipcRenderer.invoke('sessions:setEffort', id, effort),
     restoreCheckpoint: (sessionId, itemId) =>
       ipcRenderer.invoke('sessions:restoreCheckpoint', sessionId, itemId),

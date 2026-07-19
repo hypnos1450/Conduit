@@ -121,6 +121,7 @@ export default function Chat(props: {
   const [model, setModel] = useState<ModelId>(session?.model ?? props.settings.defaultModel)
   const [effort, setEffort] = useState<ReasoningEffort | ''>(session?.reasoningEffort ?? '')
   const [planOnly, setPlanOnly] = useState(!!session?.planOnly)
+  const [agentId, setAgentId] = useState<string | undefined>(session?.agentId)
   const [images, setImages] = useState<string[]>([])
   const [files, setFiles] = useState<string[]>([])
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
@@ -139,6 +140,7 @@ export default function Chat(props: {
         setItems(data.items)
         setModel(data.meta.model)
         setEffort(data.meta.reasoningEffort ?? '')
+        setAgentId(data.meta.agentId)
         setCheckpoints(data.checkpoints)
         setUsage(data.usage ?? null)
       }
@@ -895,9 +897,34 @@ export default function Chat(props: {
             }}
           />
           <div className="composer-row">
+            {(props.settings.customAgents?.length ?? 0) > 0 && (
+              <span className="composer-chip" title="Run this session as a custom agent">
+                <select
+                  value={agentId ?? ''}
+                  onChange={(e) => {
+                    const nextId = e.target.value || undefined
+                    setAgentId(nextId)
+                    const agent = props.settings.customAgents?.find((a) => a.id === nextId)
+                    if (agent) setModel(agent.model)
+                    void window.harness.sessions
+                      .setAgent(session.id, nextId ?? null)
+                      .then(() => props.onSessionMeta?.())
+                  }}
+                >
+                  <option value="">No agent</option>
+                  {props.settings.customAgents?.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </span>
+            )}
             <span className="composer-chip">
               <select
                 value={model}
+                disabled={!!agentId}
+                title={agentId ? "Model is set by the selected agent" : undefined}
                 onChange={(e) => {
                   const m = e.target.value as ModelId
                   setModel(m)
@@ -938,7 +965,10 @@ export default function Chat(props: {
                 void window.harness.sessions.setPlanOnly(session.id, next).then(() => props.onSessionMeta?.())
               }}
             >
-              {planOnly ? 'plan-only' : props.settings.permissionMode}
+              {planOnly
+                ? 'plan-only'
+                : props.settings.customAgents?.find((a) => a.id === agentId)?.permissionMode ??
+                  props.settings.permissionMode}
             </button>
             <button
               type="button"

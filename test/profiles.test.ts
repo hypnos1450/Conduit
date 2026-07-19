@@ -1,6 +1,37 @@
 import { describe, it, expect } from 'vitest'
 import { profileFor, estimateTokens, PROFILES } from '../src/main/agent/profiles'
 
+describe('custom agent persona in the system prompt', () => {
+  it('injects the active agent role and the delegatable-agents list', () => {
+    const prompt = profileFor('grok-build-0.1').systemPrompt({
+      cwd: '/w',
+      agentRole: { name: 'Reviewer', instructions: 'Focus on security and correctness.' },
+      spawnableAgents: [{ name: 'Docs Writer', instructions: 'Write clear documentation.' }]
+    })
+    expect(prompt).toContain('# Active agent: Reviewer')
+    expect(prompt).toContain('Focus on security and correctness.')
+    expect(prompt).toContain('# Agents you can delegate to')
+    expect(prompt).toContain('- Docs Writer: Write clear documentation.')
+  })
+
+  it('omits both blocks when no agent is configured', () => {
+    const prompt = profileFor('grok-build-0.1').systemPrompt({ cwd: '/w' })
+    expect(prompt).not.toContain('# Active agent')
+    expect(prompt).not.toContain('# Agents you can delegate to')
+  })
+
+  it('keeps HARNESS_CORE as the prefix so the prompt cache still hits', () => {
+    const withAgent = profileFor('grok-build-0.1').systemPrompt({
+      cwd: '/w',
+      agentRole: { name: 'X', instructions: 'y' }
+    })
+    const without = profileFor('grok-build-0.1').systemPrompt({ cwd: '/w' })
+    // The two share a long identical prefix (core + addendum) before the
+    // per-session agent block diverges them.
+    expect(withAgent.slice(0, 500)).toBe(without.slice(0, 500))
+  })
+})
+
 describe('profileFor', () => {
   it('resolves known models', () => {
     expect(profileFor('grok-4.3').apiModel).toBe('grok-4.3')

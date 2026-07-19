@@ -1,4 +1,5 @@
 // Shared security helpers: path jail, ID validation, settings schema, SSRF checks.
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import net from 'node:net'
@@ -7,6 +8,7 @@ import dns from 'node:dns/promises'
 import { safeStorage } from 'electron'
 import {
   AgentProfileId,
+  CustomAgent,
   DEFAULT_SETTINGS,
   McpServerConfig,
   ModelId,
@@ -150,6 +152,33 @@ function sanitizeMcpServer(raw: unknown): McpServerConfig | null {
   }
 }
 
+const AGENT_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/
+// Matches the skill slug rule in skills.ts (NAME_RE).
+const AGENT_SKILL_RE = /^[a-z0-9][a-z0-9-]{0,39}$/
+
+/** Validate one user-defined agent persona; generate an id if missing. */
+function sanitizeCustomAgent(raw: unknown): CustomAgent | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  const name = String(o.name ?? '').trim().slice(0, 60)
+  if (!name) return null
+  const id =
+    typeof o.id === 'string' && AGENT_ID_RE.test(o.id) ? o.id : crypto.randomBytes(8).toString('hex')
+  const instructions = String(o.instructions ?? '').slice(0, 8000)
+  const skills = Array.isArray(o.skills)
+    ? [...new Set(o.skills.filter((s): s is string => typeof s === 'string' && AGENT_SKILL_RE.test(s)))].slice(0, 60)
+    : []
+  const model: ModelId =
+    typeof o.model === 'string' && MODELS.has(o.model as ModelId)
+      ? (o.model as ModelId)
+      : DEFAULT_SETTINGS.defaultModel
+  const permissionMode: PermissionMode =
+    typeof o.permissionMode === 'string' && PERMISSION_MODES.has(o.permissionMode as PermissionMode)
+      ? (o.permissionMode as PermissionMode)
+      : 'ask'
+  return { id, name, instructions, skills, model, permissionMode }
+}
+
 /**
  * Merge a partial settings patch into current settings with runtime validation.
  * Unknown keys are dropped. Invalid values keep the previous setting.
@@ -209,6 +238,19 @@ export function applySettingsPatch(current: Settings, patch: unknown): Settings 
       if (s) servers.push(s)
     }
     next.mcpServers = servers
+  }
+
+  if (Array.isArray(p.customAgents)) {
+    const agents: CustomAgent[] = []
+    const seen = new Set<string>()
+    for (const raw of p.customAgents.slice(0, 40)) {
+      const a = sanitizeCustomAgent(raw)
+      if (a && !seen.has(a.id)) {
+        seen.add(a.id)
+        agents.push(a)
+      }
+    }
+    next.customAgents = agents
   }
 
   return next

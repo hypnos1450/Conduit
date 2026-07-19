@@ -12,8 +12,10 @@ import {
   writeAllowKey,
   isValidId,
   isValidJobId,
-  assertId
+  assertId,
+  applySettingsPatch
 } from '../src/main/security'
+import { DEFAULT_SETTINGS } from '@shared/types'
 
 describe('resolveInWorkspace (path traversal guard)', () => {
   let root: string
@@ -164,5 +166,66 @@ describe('id validation', () => {
   it('isValidJobId accepts safe slugs, rejects traversal', () => {
     expect(isValidJobId('job_1-2')).toBe(true)
     expect(isValidJobId('../etc')).toBe(false)
+  })
+})
+
+describe('applySettingsPatch — customAgents', () => {
+  it('accepts a valid agent and preserves its fields', () => {
+    const next = applySettingsPatch(DEFAULT_SETTINGS, {
+      customAgents: [
+        {
+          id: 'abc123',
+          name: 'Reviewer',
+          instructions: 'Focus on security.',
+          skills: ['code-review'],
+          model: 'grok-4.3',
+          permissionMode: 'auto-edit'
+        }
+      ]
+    })
+    expect(next.customAgents).toHaveLength(1)
+    const a = next.customAgents[0]
+    expect(a).toMatchObject({
+      id: 'abc123',
+      name: 'Reviewer',
+      instructions: 'Focus on security.',
+      skills: ['code-review'],
+      model: 'grok-4.3',
+      permissionMode: 'auto-edit'
+    })
+  })
+
+  it('generates an id when one is missing', () => {
+    const next = applySettingsPatch(DEFAULT_SETTINGS, { customAgents: [{ name: 'X' }] })
+    expect(next.customAgents[0].id).toMatch(/^[a-f0-9]{16}$/)
+  })
+
+  it('drops nameless agents and sanitizes bad fields to safe defaults', () => {
+    const next = applySettingsPatch(DEFAULT_SETTINGS, {
+      customAgents: [
+        { name: '   ', instructions: 'no name -> dropped' },
+        { name: 'A', skills: ['ok-skill', 'Bad Skill!', 42], model: 'nope', permissionMode: 'wild' }
+      ]
+    })
+    expect(next.customAgents).toHaveLength(1)
+    const a = next.customAgents[0]
+    expect(a.name).toBe('A')
+    expect(a.skills).toEqual(['ok-skill']) // invalid slugs and non-strings removed
+    expect(a.model).toBe(DEFAULT_SETTINGS.defaultModel)
+    expect(a.permissionMode).toBe('ask')
+  })
+
+  it('dedupes by id (first wins) and caps the count at 40', () => {
+    const dup = applySettingsPatch(DEFAULT_SETTINGS, {
+      customAgents: [
+        { id: 'x', name: 'First' },
+        { id: 'x', name: 'Second' }
+      ]
+    })
+    expect(dup.customAgents).toHaveLength(1)
+    expect(dup.customAgents[0].name).toBe('First')
+
+    const many = Array.from({ length: 50 }, (_, i) => ({ id: `a${i}`, name: `n${i}` }))
+    expect(applySettingsPatch(DEFAULT_SETTINGS, { customAgents: many }).customAgents).toHaveLength(40)
   })
 })

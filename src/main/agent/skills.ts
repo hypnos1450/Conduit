@@ -178,9 +178,17 @@ class SkillStore {
     return { success: true, message: `Skill "${name}" ${op.action === 'create' ? 'created' : 'updated'}.` }
   }
 
-  /** Compact index for the system prompt. */
-  index(): string {
-    const metas = this.list()
+  /**
+   * Compact index for the system prompt. Pass `only` to scope the index to a
+   * subset of skill names (used by custom agents to expose just their skills);
+   * omit it for the full index.
+   */
+  index(only?: string[]): string {
+    let metas = this.list()
+    if (only) {
+      const allow = new Set(only)
+      metas = metas.filter((m) => allow.has(m.name))
+    }
     if (!metas.length) return ''
     return (
       `# Skills index\nYou have ${metas.length} saved skill${metas.length === 1 ? '' : 's'} (read one with the skill tool before doing the workflow it covers):\n` +

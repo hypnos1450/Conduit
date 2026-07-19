@@ -13,6 +13,7 @@ import {
   AgentEvent,
   Attachments,
   ChatItem,
+  CustomAgent,
   PermissionMode,
   PermissionRequest,
   Settings
@@ -86,8 +87,20 @@ export class AgentRun {
     return true
   }
 
+  /** The custom-agent persona selected for this session, if any. */
+  private selectedAgent(): CustomAgent | undefined {
+    const id = this.session.meta.agentId
+    if (!id) return undefined
+    return this.settings.customAgents?.find((a) => a.id === id)
+  }
+
+  /** Permission mode in force: a selected agent's mode overrides the global. */
+  private effectiveMode(): PermissionMode {
+    return this.selectedAgent()?.permissionMode ?? this.settings.permissionMode
+  }
+
   private planOnly(): boolean {
-    return this.session.meta.planOnly === true || this.settings.permissionMode === 'plan-only'
+    return this.session.meta.planOnly === true || this.effectiveMode() === 'plan-only'
   }
 
   /** Static + MCP tools available this run, honoring settings toggles. */
@@ -495,7 +508,8 @@ export class AgentRun {
         this.session.plan = steps
         this.emit({ type: 'plan', sessionId, steps })
       },
-      askUser: (question, options) => this.askQuestion({ question, options })
+      askUser: (question, options) => this.askQuestion({ question, options }),
+      customAgents: this.settings.customAgents ?? []
     }
 
     let preview: string | undefined
@@ -594,7 +608,7 @@ export class AgentRun {
     input: Record<string, unknown>,
     preview?: string
   ): Promise<boolean> {
-    const mode: PermissionMode = this.planOnly() ? 'plan-only' : this.settings.permissionMode
+    const mode: PermissionMode = this.planOnly() ? 'plan-only' : this.effectiveMode()
     if (tool.kind === 'read') return true
     if (mode === 'plan-only' && (tool.kind === 'write' || tool.kind === 'command')) {
       recordFailure('denied', tool.name, 'plan-only mode')
@@ -663,6 +677,7 @@ export class AgentRun {
 
   private buildMessages(): ApiMessage[] {
     const profile = profileFor(this.session.meta.model)
+    const agent = this.selectedAgent()
     // Freeze memory/skills/project-doc snapshots the first time this session
     // hits the model, so the system prompt (and the prompt-cache prefix)
     // stays stable even as the agent learns mid-session.
@@ -670,7 +685,8 @@ export class AgentRun {
       this.session.memorySnapshot = memoryStore.snapshot(this.session.meta.cwd)
     }
     if (this.settings.memoryEnabled && this.session.skillsSnapshot === undefined) {
-      this.session.skillsSnapshot = skillStore.index()
+      // A selected agent sees only its own skills; otherwise, all of them.
+      this.session.skillsSnapshot = skillStore.index(agent ? agent.skills : undefined)
     }
     if (this.session.projectDocSnapshot === undefined) {
       this.session.projectDocSnapshot = readProjectDoc(this.session.meta.cwd)
@@ -694,7 +710,12 @@ export class AgentRun {
         gitBranch: this.session.gitSnapshot,
         repoMap: this.settings.repoMapEnabled ? this.session.repoMapSnapshot : undefined,
         planOnly: this.planOnly(),
-        testCommand: this.settings.testCommand
+        testCommand: this.settings.testCommand,
+        agentRole: agent ? { name: agent.name, instructions: agent.instructions } : undefined,
+        spawnableAgents:
+          this.settings.enableSubagents && this.settings.customAgents?.length
+            ? this.settings.customAgents.map((a) => ({ name: a.name, instructions: a.instructions }))
+            : undefined
       })
     }
     return [system, ...this.session.apiMessages]

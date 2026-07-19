@@ -291,6 +291,22 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       await sessionStore.save(rec)
     }
   })
+  handle('sessions:setAgent', async (_e, sessionId: string, agentId: string | null) => {
+    assertId(sessionId, 'sessionId')
+    const rec = await sessionStore.load(sessionId)
+    if (!rec) return
+    if (!agentId) {
+      rec.meta.agentId = undefined
+    } else {
+      // Only accept an id that resolves to a defined agent; adopt its model so
+      // the session runs on the agent's preferred model.
+      const agent = settings.customAgents?.find((a) => a.id === agentId)
+      if (!agent) throw new Error('Unknown agent')
+      rec.meta.agentId = agent.id
+      rec.meta.model = agent.model
+    }
+    await sessionStore.save(rec)
+  })
   handle('sessions:setEffort', async (_e, sessionId: string, effort: ReasoningEffort | null) => {
     assertId(sessionId, 'sessionId')
     const rec = await sessionStore.load(sessionId)
