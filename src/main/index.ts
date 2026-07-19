@@ -5,6 +5,7 @@ import { fixPath } from './shell-path'
 import { buildMenu } from './menu'
 import { initUpdater, isInstallingUpdate } from './updater'
 import { registerIpc } from './ipc'
+import { lspManager } from './agent/lsp/manager'
 import { termManager } from './panels'
 import { sessionStore } from './sessions'
 
@@ -145,8 +146,11 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin' || isInstallingUpdate) app.quit()
 })
 
-// Don't leave terminal-panel processes running after the app exits.
-app.on('before-quit', () => termManager.killAll())
+// Don't leave terminal-panel or language-server processes running after exit.
+app.on('before-quit', () => {
+  termManager.killAll()
+  lspManager.disposeAll()
+})
 
 // GPU/utility process crashes restart automatically — but log them so
 // "the preview went blank" is diagnosable from main.log.

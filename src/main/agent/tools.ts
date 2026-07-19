@@ -4,9 +4,15 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { PlanStep } from '@shared/types'
 import { ApiToolDef } from './provider'
 import { newFilePreview, unifiedDiff } from './diff'
+import { parsePatch, applyHunks, PatchError } from './apply-patch'
+import { scrubCredentials } from './env'
+import { fetchDocPage, loadCatalog, loadIndex, resolveDocset, searchIndex } from './docs'
+import { lspManager } from './lsp/manager'
+import { LspDiagnostic, LspDocumentSymbol, LspLocation, LspLocationLink } from './lsp/client'
 import { MemoryTarget, memoryStore } from './memory'
 import { skillStore } from './skills'
 import { spawnAgentTool } from './subagent'
@@ -25,6 +31,8 @@ export interface ToolContext {
   onBeforeMutate?: (absPath: string) => Promise<void>
   /** Called when the agent publishes a plan via update_plan */
   onPlan?: (steps: PlanStep[]) => void
+  /** Pause and ask the user a question; resolves with their answer ('' if declined). */
+  askUser?: (question: string, options?: string[]) => Promise<string>
 }
 
 export interface ToolResult {
@@ -130,19 +138,10 @@ const bashTool: Tool = {
         return
       }
       const timeoutS = Math.min(Number(input.timeout_seconds) || 120, 600)
-      const shellBin = process.platform === 'win32' ? 'cmd.exe' : '/bin/zsh'
-      const shellArgs = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-lc', command]
-      // Inherit env but drop common credential vars so a confused model
-      // can't trivially dump tokens via `env` / `printenv`.
-      const env: NodeJS.ProcessEnv = { ...process.env, CLICOLOR: '0', NO_COLOR: '1', GIT_PAGER: 'cat', PAGER: 'cat' }
-      for (const k of Object.keys(env)) {
-        if (/^(XAI_|OPENAI_|ANTHROPIC_|AWS_|GH_TOKEN|GITHUB_TOKEN|NPM_TOKEN|API_KEY|.*_API_KEY|.*_SECRET|.*_TOKEN)$/i.test(k)) {
-          delete env[k]
-        }
-      }
+      const [shellBin, shellArgs] = shellInvocation(command)
       const child = spawn(shellBin, shellArgs, {
         cwd: ctx.cwd,
-        env,
+        env: commandEnv(),
         stdio: ['ignore', 'pipe', 'pipe']
       })
       let out = ''
@@ -172,6 +171,385 @@ const bashTool: Tool = {
         resolve({ ok: code === 0 && !timedOut, output: clamp(out) + suffix || '(no output)' })
       })
     })
+}
+
+/** Shell binary + args for a command, per platform. */
+function shellInvocation(command: string): [string, string[]] {
+  return process.platform === 'win32'
+    ? ['cmd.exe', ['/d', '/s', '/c', command]]
+    : ['/bin/zsh', ['-lc', command]]
+}
+
+/** Env for spawned commands: inherit, but drop common credential vars so a
+ *  confused model can't dump tokens via `env`/`printenv`. */
+function commandEnv(): NodeJS.ProcessEnv {
+  return scrubCredentials({ ...process.env, CLICOLOR: '0', NO_COLOR: '1', GIT_PAGER: 'cat', PAGER: 'cat' })
+}
+
+// ---------------------------------------------------------------- monitor
+
+const monitorTool: Tool = {
+  name: 'monitor',
+  kind: 'command',
+  def: {
+    type: 'function',
+    function: {
+      name: 'monitor',
+      description:
+        'Run a long-running command and watch its output until a condition is met — a dev server booting, ' +
+        'CI/tests finishing, or a log line appearing. Returns the collected output and why it stopped. ' +
+        'Set `until` to a regular expression to stop as soon as a matching line appears (e.g. "listening on|Compiled|FAIL"). ' +
+        'Without `until`, it watches until the command exits or the timeout is reached. ' +
+        'Use this instead of bash when you need to wait for something to happen in a process that keeps running.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'The shell command to run and watch' },
+          until: {
+            type: 'string',
+            description: 'Regex; stop as soon as an output line matches it. Omit to watch until the command exits.'
+          },
+          timeout_seconds: { type: 'number', description: 'Max watch time in seconds (default 120, max 600)' }
+        },
+        required: ['command']
+      }
+    }
+  },
+  summarize: (input) =>
+    `monitor: ${String(input.command ?? '')}${input.until ? ` (until /${input.until}/)` : ''}`,
+  run: (input, ctx) =>
+    new Promise((resolve) => {
+      const command = str(input, 'command')
+      const danger = dangerousCommand(command)
+      if (danger) {
+        resolve({ ok: false, output: `Refused: this command looks destructive (${danger}).` })
+        return
+      }
+      let until: RegExp | null = null
+      if (typeof input.until === 'string' && input.until) {
+        try {
+          until = new RegExp(input.until)
+        } catch (e) {
+          resolve({ ok: false, output: `Invalid \`until\` regex: ${e instanceof Error ? e.message : String(e)}` })
+          return
+        }
+      }
+      const timeoutS = Math.min(Number(input.timeout_seconds) || 120, 600)
+      const [bin, args] = shellInvocation(command)
+      const child = spawn(bin, args, { cwd: ctx.cwd, env: commandEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
+
+      let out = ''
+      let pending = '' // partial line buffer for `until` matching
+      let stop: string | null = null
+      const finish = (ok: boolean, reason: string): void => {
+        clearTimeout(timer)
+        ctx.signal.removeEventListener('abort', onAbort)
+        if (!child.killed) child.kill('SIGKILL')
+        resolve({ ok, output: `${clamp(out).trim() || '(no output)'}\n[${reason}]` })
+      }
+      const onData = (d: Buffer): void => {
+        const s = d.toString('utf8')
+        out += s
+        if (!until || stop) return
+        pending += s
+        const lines = pending.split('\n')
+        pending = lines.pop() ?? ''
+        for (const line of lines) {
+          if (until.test(line)) {
+            stop = line
+            finish(true, `matched /${input.until}/ on: ${line.trim().slice(0, 200)}`)
+            return
+          }
+        }
+      }
+      const timer = setTimeout(
+        () => finish(!until, until ? `timed out after ${timeoutS}s before /${input.until}/ matched — still running` : `watched ${timeoutS}s`),
+        timeoutS * 1000
+      )
+      const onAbort = (): void => finish(false, 'cancelled')
+      ctx.signal.addEventListener('abort', onAbort, { once: true })
+      child.stdout.on('data', onData)
+      child.stderr.on('data', onData)
+      child.on('error', (err) => finish(false, `failed to start: ${err.message}`))
+      child.on('close', (code) => {
+        if (stop) return // already resolved on match
+        finish(code === 0, `command exited with code ${code}`)
+      })
+    })
+}
+
+// -------------------------------------------------------------- diagnostics
+
+/** Detect the project's check commands from package.json scripts / tsconfig. */
+async function detectChecks(cwd: string): Promise<string[]> {
+  const cmds: string[] = []
+  try {
+    const pkg = JSON.parse(await fsp.readFile(path.join(cwd, 'package.json'), 'utf8'))
+    const scripts: Record<string, unknown> = pkg?.scripts ?? {}
+    for (const name of ['typecheck', 'type-check', 'tsc', 'lint', 'check']) {
+      if (typeof scripts[name] === 'string') cmds.push(`npm run ${name}`)
+    }
+  } catch {
+    // no package.json — fall through to tsconfig detection
+  }
+  if (!cmds.some((c) => /typecheck|type-check|tsc/.test(c)) && fs.existsSync(path.join(cwd, 'tsconfig.json'))) {
+    cmds.push('npx tsc --noEmit')
+  }
+  return cmds
+}
+
+/** Run a shell command to completion, collecting output (used by diagnostics). */
+function runShell(command: string, cwd: string, signal: AbortSignal, timeoutS: number): Promise<ToolResult> {
+  return new Promise((resolve) => {
+    const [bin, args] = shellInvocation(command)
+    const child = spawn(bin, args, { cwd, env: commandEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      child.kill('SIGKILL')
+    }, timeoutS * 1000)
+    const onAbort = (): void => {
+      child.kill('SIGKILL')
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    child.stdout.on('data', (d: Buffer) => (out += d.toString('utf8')))
+    child.stderr.on('data', (d: Buffer) => (out += d.toString('utf8')))
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      resolve({ ok: false, output: `Failed to start: ${err.message}` })
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      resolve({ ok: code === 0 && !timedOut, output: clamp(out).trim() + (timedOut ? `\n[timed out after ${timeoutS}s]` : '') })
+    })
+  })
+}
+
+const diagnosticsTool: Tool = {
+  name: 'diagnostics',
+  kind: 'command',
+  def: {
+    type: 'function',
+    function: {
+      name: 'diagnostics',
+      description:
+        "Run the project's type-checker and linter and report the errors and warnings — the fast way to surface type errors and lint issues after editing, before declaring work done. Auto-detects the check command from package.json scripts (typecheck, lint) or a tsconfig; pass `command` to run a specific one. Prefer this over a raw bash typecheck so results come back focused.",
+      parameters: {
+        type: 'object',
+        properties: {
+          command: {
+            type: 'string',
+            description: 'Optional: a specific check command to run instead of auto-detecting'
+          }
+        }
+      }
+    }
+  },
+  summarize: (input) => (input.command ? `diagnostics: ${input.command}` : 'diagnostics (auto-detect)'),
+  run: async (input, ctx) => {
+    let cmds: string[]
+    if (typeof input.command === 'string' && input.command.trim()) {
+      cmds = [input.command.trim()]
+    } else {
+      cmds = await detectChecks(ctx.cwd)
+      if (cmds.length === 0) {
+        return {
+          ok: false,
+          output:
+            'No type-check or lint command detected (no package.json typecheck/lint script and no tsconfig.json). Pass `command` with your project’s check command.'
+        }
+      }
+    }
+    const parts: string[] = []
+    let allOk = true
+    for (const cmd of cmds) {
+      const r = await runShell(cmd, ctx.cwd, ctx.signal, 300)
+      allOk = allOk && r.ok
+      parts.push(`$ ${cmd}\n${r.output || '(no output)'}${r.ok ? '\n[ok]' : ''}`)
+    }
+    return { ok: allOk, output: clamp(parts.join('\n\n')) }
+  }
+}
+
+// --------------------------------------------------------------------- lsp
+
+const SEVERITY_NAMES = ['', 'error', 'warning', 'info', 'hint']
+// LSP SymbolKind 1-26.
+const SYMBOL_KINDS = [
+  '', 'file', 'module', 'namespace', 'package', 'class', 'method', 'property',
+  'field', 'constructor', 'enum', 'interface', 'function', 'variable',
+  'constant', 'string', 'number', 'boolean', 'array', 'object', 'key', 'null',
+  'enum-member', 'struct', 'event', 'operator', 'type-parameter'
+]
+
+function lspRel(cwd: string, uri: string): string {
+  try {
+    const p = fileURLToPath(uri)
+    const rel = path.relative(cwd, p)
+    return rel.startsWith('..') ? p : rel
+  } catch {
+    return uri
+  }
+}
+
+function formatLspDiagnostics(diags: LspDiagnostic[]): string {
+  return [...diags]
+    .sort((a, b) => a.range.start.line - b.range.start.line)
+    .map((d) => {
+      const sev = SEVERITY_NAMES[d.severity ?? 1] || 'error'
+      const code = d.code !== undefined ? ` [${d.source ? `${d.source}/` : ''}${d.code}]` : d.source ? ` [${d.source}]` : ''
+      return `${d.range.start.line + 1}:${d.range.start.character + 1} ${sev}: ${d.message.replace(/\s+/g, ' ')}${code}`
+    })
+    .join('\n')
+}
+
+/** Location | Location[] | LocationLink[] | null → a uniform list. */
+function normalizeLocations(res: unknown): LspLocation[] {
+  if (!res) return []
+  const arr = Array.isArray(res) ? res : [res]
+  const out: LspLocation[] = []
+  for (const item of arr) {
+    const link = item as LspLocationLink & LspLocation
+    if (typeof link.uri === 'string' && link.range) out.push({ uri: link.uri, range: link.range })
+    else if (typeof link.targetUri === 'string')
+      out.push({ uri: link.targetUri, range: link.targetSelectionRange ?? link.targetRange })
+  }
+  return out
+}
+
+/** Format locations as rel/path:line:col with the target source line inlined. */
+async function formatLocations(cwd: string, locs: LspLocation[], cap: number): Promise<string> {
+  const lineCache = new Map<string, string[]>()
+  const parts: string[] = []
+  for (const loc of locs.slice(0, cap)) {
+    const rel = lspRel(cwd, loc.uri)
+    const lineNo = loc.range.start.line
+    let snippet = ''
+    try {
+      let lines = lineCache.get(loc.uri)
+      if (!lines) {
+        lines = (await fsp.readFile(fileURLToPath(loc.uri), 'utf8')).split('\n')
+        lineCache.set(loc.uri, lines)
+      }
+      snippet = (lines[lineNo] ?? '').trim().slice(0, 200)
+    } catch {
+      // unreadable target (generated file, lib) — location alone still helps
+    }
+    parts.push(`${rel}:${lineNo + 1}:${loc.range.start.character + 1}${snippet ? `  ${snippet}` : ''}`)
+  }
+  if (locs.length > cap) parts.push(`… ${locs.length - cap} more`)
+  return parts.join('\n')
+}
+
+/** Flatten LSP hover contents (string | MarkedString | MarkupContent | array). */
+function flattenHover(contents: unknown): string {
+  if (typeof contents === 'string') return contents
+  if (Array.isArray(contents)) return contents.map(flattenHover).filter(Boolean).join('\n')
+  if (contents && typeof contents === 'object') {
+    const c = contents as { value?: unknown; language?: unknown }
+    if (typeof c.value === 'string') return c.value
+  }
+  return ''
+}
+
+function formatSymbols(symbols: LspDocumentSymbol[], depth = 0): string[] {
+  const out: string[] = []
+  for (const s of symbols.slice(0, 200)) {
+    const line = (s.selectionRange ?? s.range ?? s.location?.range)?.start.line
+    const kind = SYMBOL_KINDS[s.kind] || 'symbol'
+    out.push(`${'  '.repeat(depth)}${s.name} (${kind})${line !== undefined ? ` :${line + 1}` : ''}`)
+    if (s.children?.length) out.push(...formatSymbols(s.children, depth + 1))
+  }
+  return out
+}
+
+const lspTool: Tool = {
+  name: 'lsp',
+  kind: 'read',
+  def: {
+    type: 'function',
+    function: {
+      name: 'lsp',
+      description:
+        'Query a language server for precise code intelligence. Actions: "diagnostics" — type/syntax errors for ONE file, instantly, without running a build (use after editing a file); ' +
+        '"definition" — jump to where the symbol at line/column is defined; "references" — every place that symbol is used (more precise than grep: resolves imports and scoping); ' +
+        '"hover" — type signature and docs for the symbol at line/column; "symbols" — an outline of the file; "status" — which servers are running. ' +
+        'Positions are 1-based and must point AT the symbol name. Supports TypeScript/JavaScript, Python, Go, Rust, C/C++ when a language server is installed; ' +
+        'the first call per language starts its server, so it may be slow while the project indexes. For project-wide checks use the diagnostics tool instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['diagnostics', 'definition', 'references', 'hover', 'symbols', 'status']
+          },
+          path: { type: 'string', description: 'File path relative to the workspace (all actions except status)' },
+          line: { type: 'number', description: '1-based line of the symbol (definition/references/hover)' },
+          column: { type: 'number', description: '1-based column of the symbol (definition/references/hover)' }
+        },
+        required: ['action']
+      }
+    }
+  },
+  summarize: (input) => {
+    const pos = input.line ? `:${input.line}${input.column ? `:${input.column}` : ''}` : ''
+    return `lsp ${input.action}${input.path ? ` ${input.path}${pos}` : ''}`
+  },
+  run: async (input, ctx) => {
+    const action = String(input.action ?? '')
+    if (action === 'status') {
+      const lines = lspManager.status()
+      return { ok: true, output: lines.length ? lines.join('\n') : 'No language servers running. One starts automatically on the first lsp call for a supported file.' }
+    }
+    const abs = resolveInCwd(ctx.cwd, str(input, 'path'))
+    if (!fs.existsSync(abs)) return { ok: false, output: `File not found: ${input.path}` }
+    let client
+    try {
+      client = await lspManager.clientFor(ctx.cwd, abs)
+    } catch (e) {
+      return { ok: false, output: e instanceof Error ? e.message : String(e) }
+    }
+    const { uri, diagnosticsSettled } = await client.syncFile(abs)
+
+    if (action === 'diagnostics') {
+      if (diagnosticsSettled) await diagnosticsSettled
+      const diags = client.diagnosticsFor(uri)
+      if (!diags.length) {
+        return { ok: true, output: `No diagnostics for ${input.path} — clean (or the server is still indexing; re-run in a moment to confirm).` }
+      }
+      return { ok: true, output: clamp(formatLspDiagnostics(diags)) }
+    }
+    if (action === 'symbols') {
+      const res = (await client.documentSymbols(uri)) as LspDocumentSymbol[] | null
+      const lines = formatSymbols(Array.isArray(res) ? res : [])
+      return { ok: true, output: lines.length ? clamp(lines.join('\n')) : 'No symbols reported for this file.' }
+    }
+
+    // Position-based actions.
+    if (!input.line) return { ok: false, output: `Action "${action}" needs \`line\` (and usually \`column\`) pointing at the symbol.` }
+    const position = {
+      line: Math.max(0, Math.trunc(Number(input.line)) - 1),
+      character: Math.max(0, (Math.trunc(Number(input.column)) || 1) - 1)
+    }
+    if (action === 'hover') {
+      const res = (await client.hover(uri, position)) as { contents?: unknown } | null
+      const text = flattenHover(res?.contents).trim()
+      return { ok: true, output: text ? clamp(text) : `No hover info at ${input.path}:${input.line}:${input.column ?? 1} — check the position points at a symbol.` }
+    }
+    if (action === 'definition') {
+      const locs = normalizeLocations(await client.definition(uri, position))
+      if (!locs.length) return { ok: true, output: `No definition found from ${input.path}:${input.line}:${input.column ?? 1}.` }
+      return { ok: true, output: clamp(await formatLocations(ctx.cwd, locs, 20)) }
+    }
+    if (action === 'references') {
+      const locs = normalizeLocations(await client.references(uri, position))
+      if (!locs.length) return { ok: true, output: `No references found from ${input.path}:${input.line}:${input.column ?? 1}.` }
+      return { ok: true, output: clamp(`${locs.length} reference${locs.length === 1 ? '' : 's'}:\n${await formatLocations(ctx.cwd, locs, 80)}`) }
+    }
+    return { ok: false, output: `Unknown action "${action}". Use diagnostics, definition, references, hover, symbols, or status.` }
+  }
 }
 
 // ---------------------------------------------------------------- read_file
@@ -230,8 +608,8 @@ const writeFileTool: Tool = {
     function: {
       name: 'write_file',
       description:
-        'Create or overwrite a file with the given content. Creates parent directories. ' +
-        'For small changes to existing files prefer edit_file.',
+        'Create or overwrite a whole file with the given content. Creates parent directories. ' +
+        'For changes to parts of an existing file prefer apply_patch.',
       parameters: {
         type: 'object',
         properties: {
@@ -263,69 +641,147 @@ const writeFileTool: Tool = {
   }
 }
 
-// ---------------------------------------------------------------- edit_file
+// -------------------------------------------------------------- apply_patch
 
-const editFileTool: Tool = {
-  name: 'edit_file',
+const APPLY_PATCH_DESC = `Edit files with a patch — the preferred way to create, modify, delete, or rename files. One call can touch several files. Format:
+
+*** Begin Patch
+*** Add File: path/new.ts       (each following line is prefixed with +)
++content line
+*** Update File: path/existing.ts
+*** Move to: path/renamed.ts     (optional — rename on update)
+@@ optional locator (a nearby function/class signature)
+ unchanged context line
+-removed line
++added line
+*** Delete File: path/old.ts
+*** End Patch
+
+Rules: paths are relative to the workspace. In Update hunks, include a few unchanged context lines around each change so it can be located; prefix context with a space, removals with -, additions with +. The call fails if a hunk's context can't be matched — do NOT re-read the file after a successful patch.`
+
+type PatchChange =
+  | { action: 'add'; abs: string; rel: string; after: string }
+  | { action: 'delete'; abs: string; rel: string; before: string }
+  | { action: 'update'; abs: string; rel: string; before: string; after: string }
+  | { action: 'move'; abs: string; rel: string; before: string; toAbs: string; toRel: string; after: string }
+
+/** Compute all file changes in memory. Returns an error string on any failure,
+ *  so nothing is written unless the whole patch applies. */
+async function computePatch(cwd: string, patchText: string): Promise<PatchChange[] | string> {
+  let ops
+  try {
+    ops = parsePatch(patchText)
+  } catch (e) {
+    return e instanceof PatchError ? e.message : String(e)
+  }
+  const changes: PatchChange[] = []
+  for (const op of ops) {
+    let abs: string
+    try {
+      abs = resolveInCwd(cwd, op.path)
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e)
+    }
+    if (op.kind === 'add') {
+      if (fs.existsSync(abs)) return `Add File: ${op.path} already exists — use Update File.`
+      changes.push({ action: 'add', abs, rel: op.path, after: op.content })
+    } else if (op.kind === 'delete') {
+      let before: string
+      try {
+        before = await fsp.readFile(abs, 'utf8')
+      } catch {
+        return `Delete File: ${op.path} does not exist.`
+      }
+      changes.push({ action: 'delete', abs, rel: op.path, before })
+    } else {
+      let before: string
+      try {
+        before = await fsp.readFile(abs, 'utf8')
+      } catch {
+        return `Update File: ${op.path} does not exist.`
+      }
+      let after: string
+      try {
+        after = applyHunks(before, op.hunks)
+      } catch (e) {
+        return e instanceof PatchError ? `Update File: ${op.path}: ${e.message}` : String(e)
+      }
+      if (op.moveTo) {
+        let toAbs: string
+        try {
+          toAbs = resolveInCwd(cwd, op.moveTo)
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e)
+        }
+        if (fs.existsSync(toAbs) && toAbs !== abs) return `Move to: ${op.moveTo} already exists.`
+        changes.push({ action: 'move', abs, rel: op.path, before, toAbs, toRel: op.moveTo, after })
+      } else {
+        changes.push({ action: 'update', abs, rel: op.path, before, after })
+      }
+    }
+  }
+  return changes
+}
+
+const applyPatchTool: Tool = {
+  name: 'apply_patch',
   kind: 'write',
   def: {
     type: 'function',
     function: {
-      name: 'edit_file',
-      description:
-        'Replace an exact string in a file. old_string must appear exactly once ' +
-        '(or set replace_all). Include surrounding lines to make it unique.',
+      name: 'apply_patch',
+      description: APPLY_PATCH_DESC,
       parameters: {
         type: 'object',
-        properties: {
-          path: { type: 'string' },
-          old_string: { type: 'string', description: 'Exact text to find' },
-          new_string: { type: 'string', description: 'Replacement text' },
-          replace_all: { type: 'boolean', description: 'Replace every occurrence' }
-        },
-        required: ['path', 'old_string', 'new_string']
+        properties: { patch: { type: 'string', description: 'The patch text, from *** Begin Patch to *** End Patch' } },
+        required: ['patch']
       }
     }
   },
-  summarize: (input) => `Edit ${input.path}`,
+  summarize: (input) => {
+    const m = String(input.patch ?? '').match(/^\*\*\* (Add|Update|Delete) File: /gm)
+    return `apply_patch: ${m ? m.length : 0} file${m && m.length === 1 ? '' : 's'}`
+  },
   preview: async (input, ctx) => {
-    const file = resolveInCwd(ctx.cwd, str(input, 'path'))
-    const text = await fsp.readFile(file, 'utf8')
-    const applied = applyEdit(text, input)
-    return typeof applied === 'string' ? undefined : unifiedDiff(text, applied.next)
+    const res = await computePatch(ctx.cwd, str(input, 'patch'))
+    if (typeof res === 'string') return undefined
+    return res
+      .map((c) => {
+        if (c.action === 'add') return `--- ${c.rel} (new)\n${newFilePreview(c.after)}`
+        if (c.action === 'delete') return `--- ${c.rel} (deleted)`
+        if (c.action === 'move') return `--- ${c.rel} → ${c.toRel}\n${unifiedDiff(c.before, c.after)}`
+        return `--- ${c.rel}\n${unifiedDiff(c.before, c.after)}`
+      })
+      .join('\n\n')
   },
   run: async (input, ctx) => {
-    const file = resolveInCwd(ctx.cwd, str(input, 'path'))
-    const text = await fsp.readFile(file, 'utf8')
-    const applied = applyEdit(text, input)
-    if (typeof applied === 'string') return { ok: false, output: applied }
-    await ctx.onBeforeMutate?.(file)
-    await fsp.writeFile(file, applied.next, 'utf8')
-    return {
-      ok: true,
-      output: `Edited ${file} (${applied.count} replacement${applied.count === 1 ? '' : 's'})`
+    const res = await computePatch(ctx.cwd, str(input, 'patch'))
+    if (typeof res === 'string') return { ok: false, output: res }
+    const done: string[] = []
+    for (const c of res) {
+      if (c.action === 'add') {
+        await ctx.onBeforeMutate?.(c.abs)
+        await fsp.mkdir(path.dirname(c.abs), { recursive: true })
+        await fsp.writeFile(c.abs, c.after, 'utf8')
+        done.push(`added ${c.rel}`)
+      } else if (c.action === 'delete') {
+        await ctx.onBeforeMutate?.(c.abs)
+        await fsp.rm(c.abs, { force: true })
+        done.push(`deleted ${c.rel}`)
+      } else if (c.action === 'update') {
+        await ctx.onBeforeMutate?.(c.abs)
+        await fsp.writeFile(c.abs, c.after, 'utf8')
+        done.push(`updated ${c.rel}`)
+      } else {
+        await ctx.onBeforeMutate?.(c.abs)
+        await ctx.onBeforeMutate?.(c.toAbs)
+        await fsp.mkdir(path.dirname(c.toAbs), { recursive: true })
+        await fsp.writeFile(c.toAbs, c.after, 'utf8')
+        if (c.toAbs !== c.abs) await fsp.rm(c.abs, { force: true })
+        done.push(`renamed ${c.rel} → ${c.toRel}`)
+      }
     }
-  }
-}
-
-/** Shared edit logic so preview and run can't disagree. Returns error string on failure. */
-function applyEdit(
-  text: string,
-  input: Record<string, unknown>
-): { next: string; count: number } | string {
-  const oldStr = String(input.old_string ?? '')
-  const newStr = String(input.new_string ?? '')
-  if (!oldStr) return 'old_string is empty'
-  const count = text.split(oldStr).length - 1
-  if (count === 0) {
-    return 'old_string not found in file. Re-read the file and match the text exactly, including whitespace.'
-  }
-  if (count > 1 && !input.replace_all) {
-    return `old_string appears ${count} times. Add surrounding context to make it unique, or set replace_all.`
-  }
-  return {
-    next: input.replace_all ? text.split(oldStr).join(newStr) : text.replace(oldStr, newStr),
-    count
+    return { ok: true, output: `Applied patch: ${done.join(', ')}.` }
   }
 }
 
@@ -692,6 +1148,89 @@ const fetchPageTool: Tool = {
   }
 }
 
+// ------------------------------------------------------------------ docs
+
+const docsTool: Tool = {
+  name: 'docs',
+  kind: 'read',
+  def: {
+    type: 'function',
+    function: {
+      name: 'docs',
+      description:
+        'Look up official programming documentation (devdocs.io): exact API signatures, syntax, standard-library and framework behavior — versioned, so it beats recalling from memory. ' +
+        'Actions: "search" — find entries in one docset (`doc` = its slug: javascript, dom, css, html, http, node, typescript, python, react, vue, go, rust, cpp, postgresql, …); when the top hit is exact its full content is included. ' +
+        '"read" — fetch one entry using `doc` plus a `path` exactly as returned by search. ' +
+        '"list" — discover docset slugs (optional query filters; slugs with ~ pin a version, e.g. python~3.13, node~22_lts). ' +
+        'Use it whenever unsure about a method, option, or syntax detail instead of guessing. Network needed on first use per docset; indexes are then cached locally for a week.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['search', 'read', 'list'] },
+          query: { type: 'string', description: 'What to look up (search) or filter docsets by (list)' },
+          doc: { type: 'string', description: 'Docset slug (search/read), e.g. "javascript" or "python~3.13"' },
+          path: { type: 'string', description: 'Entry path from a search result (read)' }
+        },
+        required: ['action']
+      }
+    }
+  },
+  summarize: (input) =>
+    `docs ${input.action}: ${String(input.query ?? input.path ?? '')}${input.doc ? ` [${input.doc}]` : ''}`,
+  run: async (input, ctx) => {
+    const action = String(input.action ?? '')
+    try {
+      if (action === 'list') {
+        const q = String(input.query ?? '').trim().toLowerCase()
+        const catalog = await loadCatalog(ctx.signal)
+        const hits = catalog
+          .filter((d) => !q || d.slug.toLowerCase().includes(q) || d.name.toLowerCase().includes(q))
+          .slice(0, 40)
+        if (!hits.length) return { ok: true, output: `No docsets match "${input.query}". Try action "list" with a broader query.` }
+        return {
+          ok: true,
+          output: hits.map((d) => `${d.slug} — ${d.name}${d.release ? ` (${d.release})` : ''}`).join('\n')
+        }
+      }
+      if (action !== 'search' && action !== 'read') {
+        return { ok: false, output: 'action must be "search", "read", or "list"' }
+      }
+      const docset = resolveDocset(await loadCatalog(ctx.signal), str(input, 'doc'))
+      if (!docset) {
+        return { ok: false, output: `Unknown docset "${input.doc}". Use action "list" with a query to find the right slug.` }
+      }
+      if (action === 'read') {
+        const entryPath = str(input, 'path')
+        const html = await fetchDocPage(docset.slug, entryPath, ctx.signal)
+        return { ok: true, output: clamp(`[${docset.slug}/${entryPath}]\n${htmlToText(html)}`) }
+      }
+      const query = str(input, 'query')
+      const hits = searchIndex(await loadIndex(docset.slug, ctx.signal), query, 15)
+      if (!hits.length) {
+        return { ok: true, output: `No entries matching "${query}" in ${docset.slug}. Try a shorter query, or another docset (action "list").` }
+      }
+      const listing = hits
+        .map((e) => `${e.name}${e.type ? ` (${e.type})` : ''} — path: ${e.path}`)
+        .join('\n')
+      // Confident top hit: include its content so no second call is needed.
+      const normalize = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+      let content = ''
+      if (hits.length === 1 || normalize(hits[0].name) === normalize(query)) {
+        const html = await fetchDocPage(docset.slug, hits[0].path, ctx.signal)
+        content = `\n\n━━ ${hits[0].name} ━━\n${htmlToText(html)}`
+      } else {
+        content = `\n\nUse action "read" with doc + path for any entry above.`
+      }
+      return { ok: true, output: clamp(`${listing}${content}`) }
+    } catch (e) {
+      return {
+        ok: false,
+        output: `docs lookup failed: ${e instanceof Error ? e.message : String(e)}. Network is required on first use per docset; try web search as a fallback.`
+      }
+    }
+  }
+}
+
 // ------------------------------------------------------------ update_plan
 
 const PLAN_STATUSES = new Set(['pending', 'active', 'done'])
@@ -974,9 +1513,49 @@ const recallHistoryTool: Tool = {
   }
 }
 
+// ---------------------------------------------------------------- ask_user
+
+const askUserTool: Tool = {
+  name: 'ask_user',
+  kind: 'read', // interacting with the user is not a machine mutation — no approval gate
+  def: {
+    type: 'function',
+    function: {
+      name: 'ask_user',
+      description:
+        'Ask the user a question and wait for their answer before continuing. Use only when you genuinely need a decision or missing information to proceed — a choice between real options, a missing value, or confirmation of intent — never for things you can determine yourself by reading the workspace. Prefer offering concrete options. This is your only way to pause for input while running autonomously.',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: { type: 'string', description: 'The question to ask the user' },
+          options: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional suggested answers, shown as quick-reply buttons (max 6)'
+          }
+        },
+        required: ['question']
+      }
+    }
+  },
+  summarize: (input) => `Ask: ${String(input.question ?? '')}`,
+  run: async (input, ctx) => {
+    if (!ctx.askUser) return { ok: false, output: 'Cannot ask the user in this context.' }
+    const question = str(input, 'question')
+    const options = Array.isArray(input.options)
+      ? input.options.filter((o): o is string => typeof o === 'string').slice(0, 6)
+      : undefined
+    const answer = await ctx.askUser(question, options)
+    return {
+      ok: true,
+      output: answer.trim() ? `User answered: ${answer.trim()}` : 'User declined to answer; use your best judgment or stop and explain.'
+    }
+  }
+}
+
 export const TOOLS: Tool[] = [
-  bashTool, readFileTool, writeFileTool, editFileTool, listDirTool, globTool, grepTool,
-  fetchPageTool, updatePlanTool, memoryTool, skillTool, sessionSearchTool, recallHistoryTool,
+  bashTool, monitorTool, diagnosticsTool, lspTool, readFileTool, applyPatchTool, writeFileTool, listDirTool, globTool, grepTool,
+  fetchPageTool, docsTool, updatePlanTool, askUserTool, memoryTool, skillTool, sessionSearchTool, recallHistoryTool,
   spawnAgentTool
 ]
 
@@ -984,7 +1563,7 @@ export const toolByName = new Map(TOOLS.map((t) => [t.name, t]))
 
 /** Read-only tools handed to subagents (no writes, shell, memory, or recursion). */
 export function subagentTools(): Tool[] {
-  return [readFileTool, listDirTool, globTool, grepTool, sessionSearchTool, fetchPageTool]
+  return [readFileTool, listDirTool, globTool, grepTool, lspTool, sessionSearchTool, fetchPageTool, docsTool]
 }
 
 export function toolDefs(opts?: { memory?: boolean }): ApiToolDef[] {

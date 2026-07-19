@@ -277,6 +277,15 @@ export interface PermissionRequest {
   priorApprovals?: number
 }
 
+/** The agent pausing to ask the user a question mid-task (ask_user tool). */
+export interface UserQuestion {
+  requestId: string
+  sessionId: string
+  question: string
+  /** Optional suggested answers, rendered as quick-reply buttons. */
+  options?: string[]
+}
+
 export interface PendingMemoryWrite {
   id: string
   ts: number
@@ -335,6 +344,7 @@ export type AgentEvent =
   | { type: 'item'; sessionId: string; item: ChatItem }
   | { type: 'item-update'; sessionId: string; item: ChatItem }
   | { type: 'permission-request'; sessionId: string; request: PermissionRequest }
+  | { type: 'user-question'; sessionId: string; request: UserQuestion }
   | { type: 'usage'; sessionId: string; usage: Usage }
   | { type: 'turn-end'; sessionId: string; stopReason: 'done' | 'cancelled' | 'error' | 'max-turns' }
   | { type: 'title'; sessionId: string; title: string }
@@ -603,6 +613,8 @@ export interface HarnessApi {
       globalAllow?: boolean,
       sessionId?: string
     ): Promise<void>
+    /** Answer an ask_user question. Empty answer = user declined to answer. */
+    respondQuestion(requestId: string, answer: string, sessionId?: string): Promise<void>
     onEvent(cb: (ev: AgentEvent) => void): () => void
   }
   memory: {

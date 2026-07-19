@@ -3,7 +3,7 @@
 // Tasks stack in one column and split its height; Terminal opens as its own
 // column. Panels can be expanded to fill their column or closed from their
 // header. Open state persists across launches.
-import { useCallback, useEffect, useState } from 'react'
+import { JSX, useCallback, useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import hljs from 'highlight.js/lib/common'
@@ -452,9 +452,14 @@ export default function RightDock({
       if (!('sessionId' in ev) || ev.sessionId !== session.id) return
       const item = ev.item
       if (item.kind !== 'tool' || item.status !== 'ok') return
-      if (item.name === 'write_file' || item.name === 'edit_file') {
+      if (item.name === 'write_file' || item.name === 'apply_patch') {
         setFilesRefresh((n) => n + 1)
-        const p = String(item.input?.['path'] ?? '')
+        let p = String(item.input?.['path'] ?? '')
+        if (!p && item.name === 'apply_patch') {
+          // apply_patch has no single path — preview the first file it touches.
+          const m = /^\*\*\* (?:Add|Update) File: (.+)$/m.exec(String(item.input?.['patch'] ?? ''))
+          p = m ? m[1].trim() : ''
+        }
         if (p) {
           setPreviewFile(p)
           setPreviewVersion((n) => n + 1)
