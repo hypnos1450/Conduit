@@ -1,20 +1,25 @@
 // Skill importer: install skill bundles from a GitHub repo or a local folder.
-// A skill is a directory holding SKILL.md (with `name:`/`description:`
-// frontmatter) plus optional bundled resources — scripts, reference docs,
-// templates — which are copied alongside it into the store. Supports one
-// skill per directory (<name>/SKILL.md), a single-skill repo/folder with
-// SKILL.md at the root, or a direct link to a SKILL.md file (installs its
-// folder). GitHub installs download the repo tarball in one request, so
-// bundles of any file count come over without rate-limit trouble. SKILL.md
-// content funnels through skillStore.install(), so imported skills get the
-// same validation and prompt-injection scanning as agent-authored ones.
+// A skill is a directory holding SKILL.md (with `name:`/`description:`/
+// optional `category:` frontmatter) plus optional bundled resources — scripts,
+// reference docs, templates — which are copied alongside it into the store.
+// One import can pull in many skills: it walks up to a few levels deep
+// (case-insensitively) and installs every skill folder it finds, whether the
+// repo lays them out flat (`<name>/SKILL.md`), under a container
+// (`skills/<name>/SKILL.md`), or grouped by category
+// (`<category>/<name>/SKILL.md`). Grouping folders become the skill's category
+// unless its SKILL.md declares one. A single-skill repo with SKILL.md at the
+// root, or a direct link to a SKILL.md file, also works. GitHub installs
+// download the repo tarball in one request, so bundles of any file count come
+// over without rate-limit trouble. SKILL.md content funnels through
+// skillStore.install(), so imported skills get the same validation and
+// prompt-injection scanning as agent-authored ones.
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { logger } from '../logger'
-import { skillStore } from './skills'
+import { normalizeCategory, skillStore } from './skills'
 
 const execFileP = promisify(execFile)
 const log = logger('skill-install')
@@ -24,26 +29,39 @@ export interface ImportReport {
   errors: string[]
 }
 
-/** How deep we look for SKILL.md files (root, <name>/, skills/<name>/). */
-const MAX_DEPTH = 2
-const MAX_SKILLS_PER_IMPORT = 20
+/**
+ * How deep we descend looking for SKILL.md files. Depth 0 is the import root.
+ * Real-world skill repos nest a few levels — `skills/<name>/`,
+ * `<category>/<name>/`, even `skills/<category>/<name>/` — so we walk deeper
+ * than the old two levels. Descent stops as soon as a directory turns out to
+ * be a skill (it holds a SKILL.md), so bundled resources are never mistaken
+ * for nested skills.
+ */
+const MAX_DEPTH = 4
+const MAX_SKILLS_PER_IMPORT = 40
 const MAX_SKILL_MD_BYTES = 512 * 1024
 /** Bundled-resource caps per skill. */
 const MAX_BUNDLE_FILES = 100
 const MAX_BUNDLE_BYTES = 20 * 1024 * 1024
 /** Cap on the downloaded repo archive. */
 const MAX_TARBALL_BYTES = 100 * 1024 * 1024
-const SKIP_DIRS = new Set(['node_modules', '__pycache__', 'dist', 'build'])
+const SKIP_DIRS = new Set(['node_modules', '__pycache__', 'dist', 'build', '.git'])
+/**
+ * Folder names that group skills but aren't themselves a meaningful category —
+ * we skip past them when deriving a category from an import's folder layout.
+ */
+const GENERIC_DIRS = new Set(['skills', 'skill', 'src', 'repo', 'main', 'packages', 'examples'])
 
 // ------------------------------------------------------------- SKILL.md
 
 interface ParsedSkill {
   name?: string
   description?: string
+  category?: string
   content: string
 }
 
-/** Parse a SKILL.md: tolerant YAML-ish frontmatter (name/description) + body. */
+/** Parse a SKILL.md: tolerant YAML-ish frontmatter (name/description/category) + body. */
 export function parseSkillMarkdown(raw: string): ParsedSkill {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(raw)
   if (!m) return { content: raw.trim() }
@@ -56,8 +74,37 @@ export function parseSkillMarkdown(raw: string): ParsedSkill {
   return {
     name: fields.name || undefined,
     description: fields.description || undefined,
+    category: fields.category || undefined,
     content: m[2].trim()
   }
+}
+
+/** Case-insensitive lookup of a directory's SKILL.md (repos vary on casing). */
+function findSkillFile(dir: string): string | null {
+  try {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.isFile() && /^skill\.md$/i.test(e.name)) return e.name
+    }
+  } catch {
+    // unreadable dir — treat as "no skill here"
+  }
+  return null
+}
+
+/**
+ * Derive a category from the folder path leading to a skill (the segments
+ * between the import root and the skill's own folder). Uses the deepest
+ * non-generic folder, so `document-skills/pdf/SKILL.md` → "document skills"
+ * while a bare `skills/pdf/SKILL.md` stays uncategorized.
+ */
+export function deriveCategory(parentSegments: string[]): string | undefined {
+  for (let i = parentSegments.length - 1; i >= 0; i--) {
+    const seg = parentSegments[i]
+    // Folder names use dashes/underscores as word separators; render them as a
+    // readable label ("document-skills" → "document skills").
+    if (seg && !GENERIC_DIRS.has(seg.toLowerCase())) return normalizeCategory(seg.replace(/[-_]+/g, ' '))
+  }
+  return undefined
 }
 
 /** Force a string into the store's kebab-case slug rules. */
@@ -95,6 +142,7 @@ function copyBundle(srcDir: string, destDir: string): CopyState {
     }
     for (const e of entries) {
       if (e.name.startsWith('.')) continue
+      // The SKILL.md itself is written by the store, not copied (any casing).
       if (isRoot && e.name.toLowerCase() === 'skill.md') continue
       if (e.isSymbolicLink()) continue // never follow links out of the bundle
       const s = path.join(src, e.name)
@@ -124,14 +172,21 @@ function copyBundle(srcDir: string, destDir: string): CopyState {
 }
 
 /** Parse + install one skill directory (SKILL.md and its bundled files). */
-function installSkillDir(dir: string, report: ImportReport): void {
+function installSkillDir(
+  dir: string,
+  skillFile: string,
+  category: string | undefined,
+  seen: Set<string>,
+  report: ImportReport
+): void {
+  const skillPath = path.join(dir, skillFile)
   let raw: string
   try {
-    if (fs.statSync(path.join(dir, 'SKILL.md')).size > MAX_SKILL_MD_BYTES) {
+    if (fs.statSync(skillPath).size > MAX_SKILL_MD_BYTES) {
       report.errors.push(`${path.basename(dir)}: SKILL.md is too large.`)
       return
     }
-    raw = fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8')
+    raw = fs.readFileSync(skillPath, 'utf8')
   } catch {
     return
   }
@@ -142,6 +197,12 @@ function installSkillDir(dir: string, report: ImportReport): void {
     report.errors.push(`Could not derive a valid skill name from "${fallbackName}".`)
     return
   }
+  // Two folders in one import can slug to the same name; installing the second
+  // would silently clobber the first, so skip it and say so instead.
+  if (seen.has(name)) {
+    report.errors.push(`${name}: duplicate skill name in this import — kept the first, skipped a copy.`)
+    return
+  }
   // Frontmatter descriptions can exceed our cap; fall back to the first body line.
   const description = (
     parsed.description ??
@@ -150,13 +211,17 @@ function installSkillDir(dir: string, report: ImportReport): void {
   )
     .trim()
     .slice(0, 140)
-  const res = skillStore.install({ name, description, content: parsed.content })
+  // A SKILL.md's own `category:` wins over one inferred from the folder layout.
+  const cat = normalizeCategory(parsed.category) ?? category
+  const res = skillStore.install({ name, description, content: parsed.content, category: cat })
   if (!res.success) {
     report.errors.push(`${name}: ${res.message}`)
     return
   }
+  seen.add(name)
   const copied = copyBundle(dir, skillStore.dirFor(name))
-  report.installed.push(copied.files ? `${name} (+${copied.files} files)` : name)
+  const label = copied.files ? `${name} (+${copied.files} files)` : name
+  report.installed.push(cat ? `${label} [${cat}]` : label)
   if (copied.truncated) {
     report.errors.push(
       `${name}: bundle truncated at ${MAX_BUNDLE_FILES} files / 20 MB — some resources were skipped.`
@@ -169,20 +234,27 @@ function installSkillDir(dir: string, report: ImportReport): void {
 /** Install skills from a local folder (SKILL.md at root, or one per subfolder). */
 export function importSkillFolder(dir: string): ImportReport {
   const report: ImportReport = { installed: [], errors: [] }
-  scanLocal(dir, 0, report)
+  scanLocal(dir, [], new Set(), report)
   if (!report.installed.length && !report.errors.length) {
     report.errors.push('No SKILL.md found in that folder (or its subfolders).')
   }
   return report
 }
 
-function scanLocal(dir: string, depth: number, report: ImportReport): void {
+/**
+ * Walk `dir` for skill folders. `segments` is the path from the import root to
+ * `dir` (the last element is `dir`'s own name); a skill's category is derived
+ * from the segments *above* its folder. `seen` dedupes name collisions.
+ */
+function scanLocal(dir: string, segments: string[], seen: Set<string>, report: ImportReport): void {
   if (report.installed.length >= MAX_SKILLS_PER_IMPORT) return
-  if (fs.existsSync(path.join(dir, 'SKILL.md'))) {
-    installSkillDir(dir, report)
+  const skillFile = findSkillFile(dir)
+  if (skillFile) {
+    // The skill's own folder is the last segment; its category comes from above.
+    installSkillDir(dir, skillFile, deriveCategory(segments.slice(0, -1)), seen, report)
     return // a skill dir doesn't contain nested skills
   }
-  if (depth >= MAX_DEPTH) return
+  if (segments.length >= MAX_DEPTH) return
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
@@ -190,9 +262,9 @@ function scanLocal(dir: string, depth: number, report: ImportReport): void {
     report.errors.push(`Cannot read ${dir}: ${err instanceof Error ? err.message : String(err)}`)
     return
   }
-  for (const e of entries) {
+  for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (e.isDirectory() && !e.name.startsWith('.') && !SKIP_DIRS.has(e.name)) {
-      scanLocal(path.join(dir, e.name), depth + 1, report)
+      scanLocal(path.join(dir, e.name), [...segments, e.name], seen, report)
     }
   }
 }

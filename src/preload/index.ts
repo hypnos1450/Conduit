@@ -78,7 +78,9 @@ const api: HarnessApi = {
     resolvePending: (id, approve) => ipcRenderer.invoke('skills:resolvePending', id, approve),
     installGithub: (url: string) => ipcRenderer.invoke('skills:installGithub', url),
     importFolder: () => ipcRenderer.invoke('skills:importFolder'),
-    reveal: (name: string) => ipcRenderer.invoke('skills:reveal', name)
+    reveal: (name: string) => ipcRenderer.invoke('skills:reveal', name),
+    setCategory: (name: string, category: string) =>
+      ipcRenderer.invoke('skills:setCategory', name, category)
   },
   files: {
     suggest: (sessionId, query) => ipcRenderer.invoke('files:suggest', sessionId, query)

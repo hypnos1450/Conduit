@@ -18,6 +18,26 @@ const MAX_CONTENT = 8000
 // (~32K tokens at the cap, well within either model's window).
 const MAX_IMPORT_CONTENT = 128_000
 const MAX_DESCRIPTION = 140
+const MAX_CATEGORY = 40
+
+/**
+ * Normalize a free-text category into a safe, bounded label. Categories are
+ * shown in the UI and grouped into the system-prompt index, so we keep them to
+ * a plain single-line charset (letters, digits, spaces, dashes) — no newlines,
+ * no markdown, no room for prompt-injection through the group header.
+ */
+export function normalizeCategory(s?: string): string | undefined {
+  if (!s) return undefined
+  const c = s
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[_/]+/g, ' ')
+    .replace(/[^\w -]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+    .slice(0, MAX_CATEGORY)
+  return c || undefined
+}
 
 export interface SkillOpResult {
   success: boolean
@@ -87,13 +107,24 @@ class SkillStore {
     }
     const files = this.listResources(name)
     const dir = this.dirFor(name)
-    const m = /^---\ndescription: (.*)\nupdated: (.*)\n---\n?([\s\S]*)$/.exec(raw)
-    if (!m) {
+    const fm = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(raw)
+    if (!fm) {
       return { meta: { name, description: '', updated: '', fileCount: files.length }, content: raw, dir, files }
     }
+    const fields: Record<string, string> = {}
+    for (const line of fm[1].split(/\r?\n/)) {
+      const kv = /^([A-Za-z_-]+):\s*(.*)$/.exec(line)
+      if (kv) fields[kv[1].toLowerCase()] = kv[2].trim()
+    }
     return {
-      meta: { name, description: m[1], updated: m[2], fileCount: files.length },
-      content: m[3].trim(),
+      meta: {
+        name,
+        description: fields.description ?? '',
+        updated: fields.updated ?? '',
+        category: normalizeCategory(fields.category),
+        fileCount: files.length
+      },
+      content: fm[2].trim(),
       dir,
       files
     }
@@ -127,6 +158,7 @@ class SkillStore {
       name: string
       description?: string
       content?: string
+      category?: string
     },
     opts?: { contentLimit?: number }
   ): SkillOpResult {
@@ -155,6 +187,7 @@ class SkillStore {
 
     const description = (op.description ?? existing?.meta.description ?? '').trim()
     const content = (op.content ?? existing?.content ?? '').trim()
+    const category = normalizeCategory(op.category ?? existing?.meta.category)
     if (!description) return { success: false, message: 'A one-line description is required (used to decide when the skill is relevant).' }
     if (description.length > MAX_DESCRIPTION) {
       return { success: false, message: `Description too long (${description.length} > ${MAX_DESCRIPTION} chars).` }
@@ -170,12 +203,25 @@ class SkillStore {
 
     fs.mkdirSync(this.dirFor(name), { recursive: true })
     const updated = new Date().toISOString().slice(0, 10)
-    fs.writeFileSync(
-      this.file(name),
-      `---\ndescription: ${description}\nupdated: ${updated}\n---\n${content}\n`,
-      'utf8'
-    )
+    const front =
+      `---\ndescription: ${description}\nupdated: ${updated}\n` +
+      (category ? `category: ${category}\n` : '') +
+      '---\n'
+    fs.writeFileSync(this.file(name), `${front}${content}\n`, 'utf8')
     return { success: true, message: `Skill "${name}" ${op.action === 'create' ? 'created' : 'updated'}.` }
+  }
+
+  /** Reassign a skill's category (pass '' to clear it). UI-driven; content unchanged. */
+  setCategory(name: string, category: string): SkillOpResult {
+    const existing = this.read((name ?? '').trim().toLowerCase())
+    if (!existing) return { success: false, message: `No skill named "${name}".` }
+    return this.save({
+      action: 'update',
+      name: existing.meta.name,
+      // Empty string means "clear" — pass a sentinel space that normalizes away
+      // so the ?? in save() doesn't fall back to the existing category.
+      category: category.trim() ? category : ' '
+    })
   }
 
   /**
@@ -190,10 +236,27 @@ class SkillStore {
       metas = metas.filter((m) => allow.has(m.name))
     }
     if (!metas.length) return ''
-    return (
-      `# Skills index\nYou have ${metas.length} saved skill${metas.length === 1 ? '' : 's'} (read one with the skill tool before doing the workflow it covers):\n` +
-      metas.map((m) => `- ${m.name}: ${m.description}`).join('\n')
+    const header = `# Skills index\nYou have ${metas.length} saved skill${metas.length === 1 ? '' : 's'} (read one with the skill tool before doing the workflow it covers):`
+    const line = (m: SkillMeta): string => `- ${m.name}: ${m.description}`
+    // If nothing is categorized, keep the flat list (unchanged behavior).
+    if (!metas.some((m) => m.category)) {
+      return `${header}\n${metas.map(line).join('\n')}`
+    }
+    // Otherwise group under category subheaders so a large index stays scannable.
+    const groups = new Map<string, SkillMeta[]>()
+    for (const m of metas) {
+      const key = m.category ?? 'other'
+      const arr = groups.get(key)
+      if (arr) arr.push(m)
+      else groups.set(key, [m])
+    }
+    const keys = [...groups.keys()].sort((a, b) =>
+      a === 'other' ? 1 : b === 'other' ? -1 : a.localeCompare(b)
     )
+    const body = keys
+      .map((k) => `## ${k}\n${groups.get(k)!.map(line).join('\n')}`)
+      .join('\n')
+    return `${header}\n${body}`
   }
 
   // ------------------------------------------------- staged (pending) writes
@@ -227,7 +290,12 @@ class SkillStore {
   }
 
   /** Create-or-update used by the skill importer (GitHub / folder). */
-  install(op: { name: string; description: string; content: string }): SkillOpResult {
+  install(op: {
+    name: string
+    description: string
+    content: string
+    category?: string
+  }): SkillOpResult {
     const action = this.read(op.name) ? 'update' : 'create'
     return this.save({ action, ...op }, { contentLimit: MAX_IMPORT_CONTENT })
   }

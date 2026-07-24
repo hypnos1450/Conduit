@@ -326,6 +326,8 @@ export interface SkillMeta {
   description: string
   /** ISO date of last update */
   updated: string
+  /** Optional grouping label shown in the UI (e.g. "document skills"). */
+  category?: string
   /** Number of bundled resource files (scripts, references) beside SKILL.md */
   fileCount?: number
 }
@@ -659,6 +661,8 @@ export interface HarnessApi {
     importFolder(): Promise<SkillImportReport | null>
     /** Show the skill's folder in Finder/Explorer (for sharing/export) */
     reveal(name: string): Promise<void>
+    /** Assign (or clear, with '') a skill's category for grouping in the UI */
+    setCategory(name: string, category: string): Promise<void>
   }
   files: {
     suggest(sessionId: string, query: string): Promise<string[]>

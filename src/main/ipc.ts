@@ -509,6 +509,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     const skill = skillStore.read(String(name))
     if (skill) shell.showItemInFolder(path.join(skill.dir, 'SKILL.md'))
   })
+  handle('skills:setCategory', (_e, name: string, category: string) => {
+    skillStore.setCategory(String(name), String(category ?? ''))
+  })
   handle('skills:importFolder', async () => {
     const win = getWindow()
     if (!win) return null

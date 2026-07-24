@@ -1869,6 +1869,58 @@ button svg {
   padding: 1px 6px;
 }
 
+/* Skill categories & filtering */
+.skill-search {
+  margin-bottom: 2px;
+}
+.skill-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.skill-group-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 3px 2px;
+  margin-top: 4px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+}
+.skill-group-header:hover {
+  color: var(--text-secondary);
+}
+.skill-group-chevron {
+  display: inline-block;
+  transition: transform 0.12s ease;
+  font-size: 13px;
+}
+.skill-group-chevron.open {
+  transform: rotate(90deg);
+}
+.skill-group-name {
+  font-weight: 600;
+}
+.skill-group-count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  text-align: center;
+  letter-spacing: 0;
+}
+.skill-cat-edit {
+  display: block;
+  margin-top: 6px;
+}
+.skill-cat-edit input {
+  max-width: 260px;
+}
+
 /* ------------------------------------------------------- right dock */
 .dock-rail {
   width: 40px;

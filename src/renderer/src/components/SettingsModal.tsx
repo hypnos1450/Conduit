@@ -1,4 +1,4 @@
-import { JSX, useCallback, useEffect, useState } from 'react'
+import { JSX, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   CustomAgent,
   McpInstallPreview,
@@ -174,12 +174,116 @@ function SkillInstall({ onInstalled }: { onInstalled: () => void }): JSX.Element
   )
 }
 
+const UNCATEGORIZED = 'Uncategorized'
+
+/** One skill row: view/folder/delete plus inline category assignment. */
+function SkillRow({
+  skill,
+  categories,
+  onChanged
+}: {
+  skill: SkillMeta
+  categories: string[]
+  onChanged: () => void
+}): JSX.Element {
+  const [open, setOpen] = useState<{ content: string; files: string[] } | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [catValue, setCatValue] = useState(skill.category ?? '')
+
+  const toggleView = (): void => {
+    if (open) return setOpen(null)
+    void window.harness.skills
+      .get(skill.name)
+      .then((r) => r && setOpen({ content: r.content, files: r.files }))
+  }
+
+  const saveCategory = (): void => {
+    setEditing(false)
+    if ((catValue.trim() || '') === (skill.category ?? '')) return
+    void window.harness.skills.setCategory(skill.name, catValue.trim()).then(onChanged)
+  }
+
+  return (
+    <div className="memory-entry">
+      <span className="memory-entry-text">
+        <b>{skill.name}</b> — {skill.description}{' '}
+        <span style={{ opacity: 0.6 }}>
+          (updated {skill.updated}
+          {skill.fileCount ? ` · ${skill.fileCount} bundled file${skill.fileCount === 1 ? '' : 's'}` : ''})
+        </span>
+        {editing && (
+          <span className="skill-cat-edit">
+            <input
+              className="login-input"
+              list="skill-category-list"
+              placeholder="category (blank to clear)"
+              autoFocus
+              value={catValue}
+              onChange={(e) => setCatValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') saveCategory()
+                if (e.key === 'Escape') setEditing(false)
+              }}
+              onBlur={saveCategory}
+            />
+            <datalist id="skill-category-list">
+              {categories.map((c) => (
+                <option key={c} value={c} />
+              ))}
+            </datalist>
+          </span>
+        )}
+        {open && (
+          <>
+            {open.files.length > 0 && (
+              <div className="skill-files">
+                {open.files.map((f) => (
+                  <code key={f}>{f}</code>
+                ))}
+              </div>
+            )}
+            <pre className="skill-body">{open.content}</pre>
+          </>
+        )}
+      </span>
+      <span>
+        <button className="mini-btn" title="View playbook" onClick={toggleView}>
+          {open ? 'hide' : 'view'}
+        </button>
+        <button
+          className="mini-btn"
+          title="Change category"
+          onClick={() => {
+            setCatValue(skill.category ?? '')
+            setEditing((v) => !v)
+          }}
+        >
+          category
+        </button>
+        <button
+          className="mini-btn"
+          title="Show the skill folder (share it by copying the folder)"
+          onClick={() => void window.harness.skills.reveal(skill.name)}
+        >
+          folder
+        </button>
+        <button
+          className="mini-btn danger"
+          title="Delete this skill"
+          onClick={() => void window.harness.skills.remove(skill.name).then(onChanged)}
+        >
+          <XIcon size={12} strokeWidth={2.2} />
+        </button>
+      </span>
+    </div>
+  )
+}
+
 function SkillsSection(): JSX.Element {
   const [skills, setSkills] = useState<SkillMeta[]>([])
   const [pending, setPending] = useState<PendingSkillWrite[]>([])
-  const [openSkill, setOpenSkill] = useState<{ name: string; content: string; files: string[] } | null>(
-    null
-  )
+  const [query, setQuery] = useState('')
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
   const refresh = useCallback(() => {
     void window.harness.skills.list().then(setSkills)
@@ -194,6 +298,42 @@ function SkillsSection(): JSX.Element {
       void window.harness.skills.list().then(setSkills)
     })
   }
+
+  // Known categories (for the assignment datalist), independent of the filter.
+  const allCategories = useMemo(
+    () => [...new Set(skills.map((s) => s.category).filter((c): c is string => !!c))].sort(),
+    [skills]
+  )
+
+  // Filter, then group by category. Uncategorized skills sort to the bottom.
+  const groups = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const filtered = q
+      ? skills.filter((s) =>
+          `${s.name} ${s.description} ${s.category ?? ''}`.toLowerCase().includes(q)
+        )
+      : skills
+    const map = new Map<string, SkillMeta[]>()
+    for (const s of filtered) {
+      const key = s.category || UNCATEGORIZED
+      const arr = map.get(key)
+      if (arr) arr.push(s)
+      else map.set(key, [s])
+    }
+    return [...map.entries()].sort(([a], [b]) =>
+      a === UNCATEGORIZED ? 1 : b === UNCATEGORIZED ? -1 : a.localeCompare(b)
+    )
+  }, [skills, query])
+
+  const toggleCollapse = (cat: string): void =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(cat)) next.delete(cat)
+      else next.add(cat)
+      return next
+    })
+
+  const multiCategory = groups.length > 1 || (groups[0] && groups[0][0] !== UNCATEGORIZED)
 
   return (
     <div className="memory-section">
@@ -238,58 +378,37 @@ function SkillsSection(): JSX.Element {
           install some from a GitHub repo above.
         </div>
       )}
-      {skills.map((s) => (
-        <div key={s.name} className="memory-entry">
-          <span className="memory-entry-text">
-            <b>{s.name}</b> — {s.description}{' '}
-            <span style={{ opacity: 0.6 }}>
-              (updated {s.updated}
-              {s.fileCount ? ` · ${s.fileCount} bundled file${s.fileCount === 1 ? '' : 's'}` : ''})
-            </span>
-            {openSkill?.name === s.name && (
-              <>
-                {openSkill.files.length > 0 && (
-                  <div className="skill-files">
-                    {openSkill.files.map((f) => (
-                      <code key={f}>{f}</code>
-                    ))}
-                  </div>
-                )}
-                <pre className="skill-body">{openSkill.content}</pre>
-              </>
-            )}
-          </span>
-          <span>
-            <button
-              className="mini-btn"
-              title="View playbook"
-              onClick={() =>
-                openSkill?.name === s.name
-                  ? setOpenSkill(null)
-                  : void window.harness.skills
-                      .get(s.name)
-                      .then((r) => r && setOpenSkill({ name: s.name, content: r.content, files: r.files }))
-              }
-            >
-              {openSkill?.name === s.name ? 'hide' : 'view'}
+      {skills.length > 3 && (
+        <input
+          className="login-input skill-search"
+          placeholder="Filter skills by name, description, or category…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      )}
+      {skills.length > 0 && groups.length === 0 && (
+        <div className="memory-empty">No skills match “{query}”.</div>
+      )}
+      {groups.map(([cat, items]) =>
+        // With no categories at all, render a plain flat list (no group header).
+        multiCategory ? (
+          <div key={cat} className="skill-group">
+            <button className="skill-group-header" onClick={() => toggleCollapse(cat)}>
+              <span className={`skill-group-chevron${collapsed.has(cat) ? '' : ' open'}`}>›</span>
+              <span className="skill-group-name">{cat}</span>
+              <span className="skill-group-count">{items.length}</span>
             </button>
-            <button
-              className="mini-btn"
-              title="Show the skill folder (share it by copying the folder)"
-              onClick={() => void window.harness.skills.reveal(s.name)}
-            >
-              folder
-            </button>
-            <button
-              className="mini-btn danger"
-              title="Delete this skill"
-              onClick={() => void window.harness.skills.remove(s.name).then(refresh)}
-            >
-              <XIcon size={12} strokeWidth={2.2} />
-            </button>
-          </span>
-        </div>
-      ))}
+            {!collapsed.has(cat) &&
+              items.map((s) => (
+                <SkillRow key={s.name} skill={s} categories={allCategories} onChanged={refresh} />
+              ))}
+          </div>
+        ) : (
+          items.map((s) => (
+            <SkillRow key={s.name} skill={s} categories={allCategories} onChanged={refresh} />
+          ))
+        )
+      )}
     </div>
   )
 }

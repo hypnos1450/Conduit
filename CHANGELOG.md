@@ -4,6 +4,25 @@ All notable changes to Conduit. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.6.1 — 2026-07-24
+
+**Skill import & organization: categories and better GitHub handling**
+
+- **Import more from a repo in one go.** The GitHub / folder importer now walks a few
+  levels deep (case-insensitively) and installs *every* skill folder it finds — flat
+  (`<name>/SKILL.md`), under a container (`skills/<name>/SKILL.md`), or grouped by
+  category (`<category>/<name>/SKILL.md`) — instead of only the top two levels. Each
+  skill's bundled files still come across in the single tarball download.
+- **Automatic categories.** A grouping folder (e.g. `document-skills/`) becomes the
+  skill's category, and a `category:` field in a SKILL.md's frontmatter takes
+  precedence. Categories are normalized to a safe, single-line label.
+- **Safer multi-skill imports.** Two folders that resolve to the same skill name no
+  longer silently clobber each other — the first wins and the duplicate is reported.
+- **Categorized Skills tab.** Skills are grouped under collapsible category headers with
+  counts instead of one long list, with a filter box to search by name, description, or
+  category, and an inline control to assign or change a skill's category. The
+  system-prompt skills index the agent sees is grouped the same way.
+
 ## 0.6.0 — 2026-07-23
 
 **LSP-powered edits: rename & quick-fix**
