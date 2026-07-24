@@ -29,6 +29,7 @@ import { approvalCount, bumpApproval, recordFailure, recurringFailures } from '.
 import { recordOriginal } from './checkpoints'
 import { ApiToolDef } from './provider'
 import { Tool, ToolContext, ToolResult, toolByName } from './tools'
+import { SerialQueue, withAbort } from './async'
 import { SessionRecord, sessionStore } from '../sessions'
 import { bashAllowKey, resolveInWorkspace, writeAllowKey } from '../security'
 import { buildRepoMap } from '../repo-map'
@@ -62,10 +63,9 @@ export class AgentRun {
    * Serializes ask_user prompts. The model can emit several ask_user calls in
    * one parallel tool batch; the renderer shows one question card at a time, so
    * asking them concurrently would orphan every card but the last (its promise
-   * never resolves → the turn deadlocks). Chaining forces one outstanding
-   * question at a time — later ones surface only after earlier ones are answered.
+   * never resolves → the turn deadlocks). See {@link SerialQueue}.
    */
-  private questionChain: Promise<unknown> = Promise.resolve()
+  private questionQueue = new SerialQueue()
   constructor(
     private session: SessionRecord,
     private settings: Settings,
@@ -502,45 +502,14 @@ export class AgentRun {
   }
 
   /**
-   * Ask the user a question, but never let two questions be outstanding at once
-   * (see `questionChain`). Each call waits for the previous question to settle
-   * before it emits its own card, then hands the chain to the next caller.
+   * Ask the user a question. Serialized (one card at a time — see
+   * {@link questionQueue}) and abort-aware, so cancelling a run with a question
+   * open ends the turn cleanly instead of orphaning the wait.
    */
   private askQuestionSerial(q: { question: string; options?: string[] }): Promise<string> {
-    const ask = this.questionChain.then(
-      () => this.askQuestionAbortable(q),
-      () => this.askQuestionAbortable(q)
+    return this.questionQueue.run(() =>
+      withAbort(this.abort.signal, '', () => this.askQuestion(q))
     )
-    // Keep the chain alive regardless of this question's outcome so one
-    // rejection/cancel can't wedge every later question.
-    this.questionChain = ask.then(
-      () => undefined,
-      () => undefined
-    )
-    return ask
-  }
-
-  /**
-   * Wrap askQuestion so cancelling the run resolves the wait instead of leaving
-   * it hung on a card the user will never answer. Without this, a cancel during
-   * a pending ask_user would orphan the promise and the turn could never end.
-   */
-  private askQuestionAbortable(q: { question: string; options?: string[] }): Promise<string> {
-    if (this.abort.signal.aborted) return Promise.resolve('')
-    return new Promise<string>((resolve) => {
-      const onAbort = (): void => resolve('')
-      this.abort.signal.addEventListener('abort', onAbort, { once: true })
-      this.askQuestion(q).then(
-        (answer) => {
-          this.abort.signal.removeEventListener('abort', onAbort)
-          resolve(answer)
-        },
-        () => {
-          this.abort.signal.removeEventListener('abort', onAbort)
-          resolve('')
-        }
-      )
-    })
   }
 
   private async runSingleTool(
