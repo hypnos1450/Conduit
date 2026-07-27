@@ -4,6 +4,23 @@ import { commandEnv, runCommand, shellInvocation } from '../src/main/agent/shell
 
 const posix = process.platform !== 'win32'
 
+/**
+ * Count live processes whose command line contains `marker`.
+ *
+ * Runs pgrep directly rather than through a shell: `sh -c 'pgrep -f MARKER'`
+ * puts the marker in the probe shell's own command line, and on Linux (dash)
+ * that shell outlives the pipeline long enough to match itself. pgrep never
+ * matches itself, so spawning it directly keeps the probe honest.
+ */
+function countMatching(marker: string): number {
+  try {
+    const out = execFileSync('pgrep', ['-f', marker], { encoding: 'utf8' })
+    return out.split('\n').filter((l) => l.trim()).length
+  } catch {
+    return 0 // pgrep exits 1 when nothing matches
+  }
+}
+
 describe('shellInvocation', () => {
   it('uses a POSIX shell with -lc off Windows', () => {
     if (!posix) return
@@ -72,14 +89,22 @@ describe('runCommand', () => {
   it('kills the whole process tree on timeout, leaving no orphans', async () => {
     if (!posix) return
     const marker = `conduit-orphan-probe-${process.pid}`
-    await runCommand(`sh -c 'sleep 25 # ${marker}' & echo spawned; sleep 25`, {
-      cwd: process.cwd(),
-      timeoutMs: 1_000
-    })
+    // Prove the probe can actually see a matching process before asserting it
+    // sees none — otherwise a pgrep that never matches would pass vacuously.
+    // The marker has to live in the grandchild's own argv: `sh -c 'sleep 25 #
+    // marker'` exec-replaces itself with sleep and loses it, which made an
+    // earlier version of this test pass without checking anything.
+    const done = runCommand(
+      `node -e "setTimeout(()=>{},25000);//${marker}" & echo spawned; sleep 25`,
+      { cwd: process.cwd(), timeoutMs: 1_000 }
+    )
+    await new Promise((r) => setTimeout(r, 400))
+    const seenWhileRunning = countMatching(marker)
+    await done
+    expect(seenWhileRunning).toBeGreaterThan(0)
     // Give the SIGTERM/SIGKILL escalation a moment to land.
     await new Promise((r) => setTimeout(r, 2_800))
-    const alive = execFileSync('/bin/sh', ['-c', `pgrep -f "${marker}" | wc -l`], { encoding: 'utf8' }).trim()
-    expect(Number(alive)).toBe(0)
+    expect(countMatching(marker)).toBe(0)
   }, 20_000)
 
   it('stops early when onData asks it to, and reports reason "stopped"', async () => {
