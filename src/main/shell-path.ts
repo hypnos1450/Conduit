@@ -5,8 +5,11 @@
 // MCP servers die with `spawn npx ENOENT` in a packaged build but work in dev
 // (where npm start inherits the terminal's environment).
 //
-// The bash tool is unaffected: it goes through `zsh -lc`, so the shell builds its
-// own PATH. Only direct spawns (MCP) need this.
+// The bash tool needs this too, contrary to what you might expect: `zsh -lc` is a
+// LOGIN but NON-INTERACTIVE shell, so it reads .zprofile and never .zshrc — and
+// .zshrc is where nvm/pyenv/asdf users set their PATH. Merging the interactive
+// shell's PATH into this process is what makes those binaries resolvable to
+// every child we spawn, shelled or direct.
 //
 // Fix: ask the user's login shell what PATH actually is, once, at startup.
 import { execFile } from 'node:child_process'

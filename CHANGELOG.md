@@ -4,6 +4,25 @@ All notable changes to Conduit. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.7.1 — 2026-07-26
+
+**Fixed: the agent could freeze permanently on a shell command**
+
+- **`bash` no longer hangs the session.** If a command left any process running behind it — a
+  backgrounded dev server, a watcher, anything that outlives the shell — that process kept the
+  shell's output pipe open, so the tool never saw the command finish. The turn froze with no error,
+  no timeout, and nothing in the log; the only way out was to cancel or restart. The tool now
+  detects the command's exit directly instead of waiting on the pipe.
+- **Timeouts and cancels now actually stop the command.** Commands run in their own process group,
+  so stopping one takes its whole tree down (`npm` → `node` → bundler) instead of killing the shell
+  and leaving orphans holding ports. A timed-out command says so explicitly and points at `monitor`
+  for long-running processes.
+- **Large output no longer balloons memory.** Output is capped as it streams, keeping the start and
+  the end, rather than buffering an entire build log and truncating at the end.
+- Same fixes apply to `monitor` and `diagnostics`, which shared the code path. `bash` now also runs
+  your `$SHELL` when it's POSIX-compatible, instead of always `/bin/zsh`, and decodes output
+  chunk-safely so multi-byte characters no longer garble.
+
 ## 0.7.0 — 2026-07-24
 
 **Agent teams — run a team of role agents on a project**

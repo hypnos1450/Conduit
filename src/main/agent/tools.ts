@@ -1,6 +1,5 @@
 // Agent tool implementations. Dependency-free: bash via child_process,
 // search via a bounded recursive walk.
-import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
@@ -9,7 +8,7 @@ import { AgentTeam, CustomAgent, PlanStep, TeamState } from '@shared/types'
 import { ApiToolDef } from './provider'
 import { newFilePreview, unifiedDiff } from './diff'
 import { parsePatch, applyHunks, PatchError } from './apply-patch'
-import { scrubCredentials } from './env'
+import { runCommand } from './shell'
 import { fetchDocPage, loadCatalog, loadIndex, resolveDocset, searchIndex } from './docs'
 import { lspManager } from './lsp/manager'
 import { LspCodeAction, LspDiagnostic, LspDocumentSymbol, LspLocation, LspLocationLink, LspRange } from './lsp/client'
@@ -144,64 +143,37 @@ const bashTool: Tool = {
     }
   },
   summarize: (input) => String(input.command ?? ''),
-  run: (input, ctx) =>
-    new Promise((resolve) => {
-      const command = str(input, 'command')
-      const danger = dangerousCommand(command)
-      if (danger) {
-        resolve({
-          ok: false,
-          output: `Refused: this command looks destructive (${danger}). If you really intend it, ask the user to run it themselves.`
-        })
-        return
+  run: async (input, ctx) => {
+    const command = str(input, 'command')
+    const danger = dangerousCommand(command)
+    if (danger) {
+      return {
+        ok: false,
+        output: `Refused: this command looks destructive (${danger}). If you really intend it, ask the user to run it themselves.`
       }
-      const timeoutS = Math.min(Number(input.timeout_seconds) || 120, 600)
-      const [shellBin, shellArgs] = shellInvocation(command)
-      const child = spawn(shellBin, shellArgs, {
-        cwd: ctx.cwd,
-        env: commandEnv(),
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
-      let out = ''
-      let timedOut = false
-      const timer = setTimeout(() => {
-        timedOut = true
-        child.kill('SIGKILL')
-      }, timeoutS * 1000)
-      const onAbort = (): void => {
-        child.kill('SIGKILL')
-      }
-      ctx.signal.addEventListener('abort', onAbort, { once: true })
-      child.stdout.on('data', (d: Buffer) => (out += d.toString('utf8')))
-      child.stderr.on('data', (d: Buffer) => (out += d.toString('utf8')))
-      child.on('error', (err) => {
-        clearTimeout(timer)
-        resolve({ ok: false, output: `Failed to start command: ${err.message}` })
-      })
-      child.on('close', (code) => {
-        clearTimeout(timer)
-        ctx.signal.removeEventListener('abort', onAbort)
-        const suffix = timedOut
-          ? `\n[command timed out after ${timeoutS}s]`
-          : code !== 0
-            ? `\n[exit code ${code}]`
-            : ''
-        resolve({ ok: code === 0 && !timedOut, output: clamp(out) + suffix || '(no output)' })
-      })
+    }
+    const timeoutS = Math.min(Number(input.timeout_seconds) || 120, 600)
+    const r = await runCommand(command, {
+      cwd: ctx.cwd,
+      signal: ctx.signal,
+      timeoutMs: timeoutS * 1000,
+      maxBytes: MAX_TOOL_OUTPUT
     })
-}
-
-/** Shell binary + args for a command, per platform. */
-function shellInvocation(command: string): [string, string[]] {
-  return process.platform === 'win32'
-    ? ['cmd.exe', ['/d', '/s', '/c', command]]
-    : ['/bin/zsh', ['-lc', command]]
-}
-
-/** Env for spawned commands: inherit, but drop common credential vars so a
- *  confused model can't dump tokens via `env`/`printenv`. */
-function commandEnv(): NodeJS.ProcessEnv {
-  return scrubCredentials({ ...process.env, CLICOLOR: '0', NO_COLOR: '1', GIT_PAGER: 'cat', PAGER: 'cat' })
+    if (r.reason === 'error') {
+      return { ok: false, output: `Failed to start command: ${r.error}` }
+    }
+    // A timed-out command has been stopped along with anything it spawned, so
+    // say so plainly: the model should not assume a dev server is still up.
+    const suffix =
+      r.reason === 'timeout'
+        ? `\n[command timed out after ${timeoutS}s and was stopped — if it was a long-running process (dev server, watcher), use the monitor tool instead]`
+        : r.reason === 'aborted'
+          ? '\n[cancelled]'
+          : r.code !== 0
+            ? `\n[exit code ${r.code}]`
+            : ''
+    return { ok: r.reason === 'exit' && r.code === 0, output: (r.output || '(no output)') + suffix }
+  }
 }
 
 // ---------------------------------------------------------------- monitor
@@ -235,65 +207,56 @@ const monitorTool: Tool = {
   },
   summarize: (input) =>
     `monitor: ${String(input.command ?? '')}${input.until ? ` (until /${input.until}/)` : ''}`,
-  run: (input, ctx) =>
-    new Promise((resolve) => {
-      const command = str(input, 'command')
-      const danger = dangerousCommand(command)
-      if (danger) {
-        resolve({ ok: false, output: `Refused: this command looks destructive (${danger}).` })
-        return
+  run: async (input, ctx) => {
+    const command = str(input, 'command')
+    const danger = dangerousCommand(command)
+    if (danger) {
+      return { ok: false, output: `Refused: this command looks destructive (${danger}).` }
+    }
+    let until: RegExp | null = null
+    if (typeof input.until === 'string' && input.until) {
+      try {
+        until = new RegExp(input.until)
+      } catch (e) {
+        return { ok: false, output: `Invalid \`until\` regex: ${e instanceof Error ? e.message : String(e)}` }
       }
-      let until: RegExp | null = null
-      if (typeof input.until === 'string' && input.until) {
-        try {
-          until = new RegExp(input.until)
-        } catch (e) {
-          resolve({ ok: false, output: `Invalid \`until\` regex: ${e instanceof Error ? e.message : String(e)}` })
-          return
-        }
-      }
-      const timeoutS = Math.min(Number(input.timeout_seconds) || 120, 600)
-      const [bin, args] = shellInvocation(command)
-      const child = spawn(bin, args, { cwd: ctx.cwd, env: commandEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
-
-      let out = ''
-      let pending = '' // partial line buffer for `until` matching
-      let stop: string | null = null
-      const finish = (ok: boolean, reason: string): void => {
-        clearTimeout(timer)
-        ctx.signal.removeEventListener('abort', onAbort)
-        if (!child.killed) child.kill('SIGKILL')
-        resolve({ ok, output: `${clamp(out).trim() || '(no output)'}\n[${reason}]` })
-      }
-      const onData = (d: Buffer): void => {
-        const s = d.toString('utf8')
-        out += s
-        if (!until || stop) return
-        pending += s
+    }
+    const timeoutS = Math.min(Number(input.timeout_seconds) || 120, 600)
+    let matched: string | null = null
+    let pending = '' // partial line buffer: `until` matches whole lines only
+    const r = await runCommand(command, {
+      cwd: ctx.cwd,
+      signal: ctx.signal,
+      timeoutMs: timeoutS * 1000,
+      maxBytes: MAX_TOOL_OUTPUT,
+      onData: (chunk) => {
+        if (!until || matched) return
+        pending += chunk
         const lines = pending.split('\n')
         pending = lines.pop() ?? ''
         for (const line of lines) {
           if (until.test(line)) {
-            stop = line
-            finish(true, `matched /${input.until}/ on: ${line.trim().slice(0, 200)}`)
-            return
+            matched = line
+            return true // stop the command (and its process tree)
           }
         }
+        return
       }
-      const timer = setTimeout(
-        () => finish(!until, until ? `timed out after ${timeoutS}s before /${input.until}/ matched — still running` : `watched ${timeoutS}s`),
-        timeoutS * 1000
-      )
-      const onAbort = (): void => finish(false, 'cancelled')
-      ctx.signal.addEventListener('abort', onAbort, { once: true })
-      child.stdout.on('data', onData)
-      child.stderr.on('data', onData)
-      child.on('error', (err) => finish(false, `failed to start: ${err.message}`))
-      child.on('close', (code) => {
-        if (stop) return // already resolved on match
-        finish(code === 0, `command exited with code ${code}`)
-      })
     })
+    if (r.reason === 'error') return { ok: false, output: `[failed to start: ${r.error}]` }
+    const reason =
+      r.reason === 'stopped'
+        ? `matched /${input.until}/ on: ${String(matched).trim().slice(0, 200)}`
+        : r.reason === 'aborted'
+          ? 'cancelled'
+          : r.reason === 'timeout'
+            ? until
+              ? `timed out after ${timeoutS}s before /${input.until}/ matched — command stopped`
+              : `watched ${timeoutS}s, command stopped`
+            : `command exited with code ${r.code}`
+    const ok = r.reason === 'stopped' || (r.reason === 'exit' && r.code === 0)
+    return { ok, output: `${r.output.trim() || '(no output)'}\n[${reason}]` }
+  }
 }
 
 // -------------------------------------------------------------- diagnostics
@@ -317,32 +280,17 @@ async function detectChecks(cwd: string): Promise<string[]> {
 }
 
 /** Run a shell command to completion, collecting output (used by diagnostics). */
-function runShell(command: string, cwd: string, signal: AbortSignal, timeoutS: number): Promise<ToolResult> {
-  return new Promise((resolve) => {
-    const [bin, args] = shellInvocation(command)
-    const child = spawn(bin, args, { cwd, env: commandEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
-    let out = ''
-    let timedOut = false
-    const timer = setTimeout(() => {
-      timedOut = true
-      child.kill('SIGKILL')
-    }, timeoutS * 1000)
-    const onAbort = (): void => {
-      child.kill('SIGKILL')
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-    child.stdout.on('data', (d: Buffer) => (out += d.toString('utf8')))
-    child.stderr.on('data', (d: Buffer) => (out += d.toString('utf8')))
-    child.on('error', (err) => {
-      clearTimeout(timer)
-      resolve({ ok: false, output: `Failed to start: ${err.message}` })
-    })
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      signal.removeEventListener('abort', onAbort)
-      resolve({ ok: code === 0 && !timedOut, output: clamp(out).trim() + (timedOut ? `\n[timed out after ${timeoutS}s]` : '') })
-    })
+async function runShell(command: string, cwd: string, signal: AbortSignal, timeoutS: number): Promise<ToolResult> {
+  const r = await runCommand(command, {
+    cwd,
+    signal,
+    timeoutMs: timeoutS * 1000,
+    maxBytes: MAX_TOOL_OUTPUT
   })
+  if (r.reason === 'error') return { ok: false, output: `Failed to start: ${r.error}` }
+  const suffix =
+    r.reason === 'timeout' ? `\n[timed out after ${timeoutS}s]` : r.reason === 'aborted' ? '\n[cancelled]' : ''
+  return { ok: r.reason === 'exit' && r.code === 0, output: r.output.trim() + suffix }
 }
 
 const diagnosticsTool: Tool = {
