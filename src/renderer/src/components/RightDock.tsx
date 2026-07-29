@@ -3,7 +3,7 @@
 // Tasks stack in one column and split its height; Terminal opens as its own
 // column. Panels can be expanded to fill their column or closed from their
 // header. Open state persists across launches.
-import { JSX, useCallback, useEffect, useState } from 'react'
+import { Fragment, JSX, useCallback, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import hljs from 'highlight.js/lib/common'
@@ -17,6 +17,15 @@ import {
   TeamTask,
   ToolStatus
 } from '@shared/types'
+import ArtifactView from './ArtifactView'
+import {
+  clampColWidth,
+  ColumnResizer,
+  PanelDivider,
+  redistribute,
+  usePersistedNumber,
+  usePersistedWeights
+} from './DockLayout'
 import { ExpandIcon, RefreshIcon, ShrinkIcon, XIcon } from './Icons'
 import TerminalPanel from './TerminalPanel'
 
@@ -24,6 +33,11 @@ type PanelId = 'board' | 'brief' | 'preview' | 'files' | 'tasks' | 'review' | 't
 
 const STACK_ORDER: PanelId[] = ['board', 'brief', 'preview', 'files', 'tasks', 'review']
 const STORE_KEY = 'dock-open-panels'
+const WIDTH_KEY = 'dock-width-stack'
+const TERM_WIDTH_KEY = 'dock-width-term'
+const WEIGHTS_KEY = 'dock-panel-weights'
+const DEFAULT_STACK_W = 330
+const DEFAULT_TERM_W = 520
 
 const ICONS: Record<PanelId, JSX.Element> = {
   board: (
@@ -87,13 +101,18 @@ const TITLES: Record<PanelId, string> = {
 function Panel(props: {
   id: PanelId
   expanded: boolean
+  /** Share of the column's height relative to its siblings (see DockLayout). */
+  weight?: number
   actions?: JSX.Element
   onToggleExpand: () => void
   onClose: () => void
   children: JSX.Element
 }): JSX.Element {
   return (
-    <div className={`dock-panel${props.expanded ? ' expanded' : ''}`}>
+    <div
+      className={`dock-panel${props.expanded ? ' expanded' : ''}`}
+      style={{ ['--panel-w' as string]: String(props.weight ?? 1) }}
+    >
       <div className="dock-panel-header">
         <span className="dock-panel-title">
           {ICONS[props.id]} {TITLES[props.id]}
@@ -206,12 +225,13 @@ function highlight(code: string, ext: string): string {
 
 function PreviewPanel(props: { sessionId: string; file: string | null; version: number }): JSX.Element {
   const [data, setData] = useState<FilePreview | null>(null)
-  // Scripts in previewed HTML are opt-in: heavy/hostile pages can take down
-  // the renderer or GPU process, so default to a static render.
-  const [runScripts, setRunScripts] = useState(false)
+  // HTML renders as a live artifact by default — assets resolve and scripts run,
+  // contained by the protocol's path jail and CSP (see main/artifact.ts). The
+  // toggle drops back to the old inert srcDoc render for a page that misbehaves.
+  const [live, setLive] = useState(true)
 
   useEffect(() => {
-    setRunScripts(false)
+    setLive(true)
     if (!props.file) {
       setData(null)
       return
@@ -226,17 +246,29 @@ function PreviewPanel(props: { sessionId: string; file: string | null; version: 
 
   const ext = props.file.split('.').pop()?.toLowerCase() ?? ''
   const isHtml = ext === 'html' || ext === 'htm'
+
+  // A live artifact bypasses the text read entirely: the page fetches its own
+  // assets over the protocol, so there is nothing to inline here.
+  if (isHtml && data.kind === 'text' && live) {
+    return (
+      <div className="preview-wrap">
+        <ArtifactView sessionId={props.sessionId} file={props.file} version={props.version} />
+        <div className="preview-path">
+          <button className="mini-btn" title="Render statically, without scripts" onClick={() => setLive(false)}>
+            live: on
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="preview-wrap">
       <div className="preview-path" title={props.file}>
         <span className="preview-path-text">{props.file}</span>
         {isHtml && data.kind === 'text' && (
-          <button
-            className={`mini-btn${runScripts ? ' danger' : ''}`}
-            title={runScripts ? 'Reload without scripts' : 'Run the page with scripts enabled'}
-            onClick={() => setRunScripts((v) => !v)}
-          >
-            {runScripts ? 'scripts: on' : 'scripts: off'}
+          <button className="mini-btn" title="Render as a live artifact" onClick={() => setLive(true)}>
+            live: off
           </button>
         )}
       </div>
@@ -252,13 +284,8 @@ function PreviewPanel(props: { sessionId: string; file: string | null; version: 
       )}
       {data.kind === 'text' &&
         (isHtml ? (
-          <iframe
-            key={runScripts ? 'js' : 'static'}
-            className="preview-frame"
-            sandbox={runScripts ? 'allow-scripts' : ''}
-            srcDoc={data.content}
-            title={props.file}
-          />
+          // Static fallback: no scripts, no asset resolution — deliberately inert.
+          <iframe className="preview-frame" sandbox="" srcDoc={data.content} title={props.file} />
         ) : ext === 'md' || ext === 'markdown' ? (
           <div className="preview-scroll md">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{data.content}</ReactMarkdown>
@@ -516,14 +543,21 @@ export default function RightDock({
   session,
   onSendToChat,
   forceOpenTerm,
-  forceOpenReview
+  forceOpenReview,
+  reviewSignal
 }: {
   session: SessionMeta | null
   onSendToChat?: (text: string) => void
   /** Increment to force-open the terminal panel (e.g. pin from agent) */
   forceOpenTerm?: number
-  /** Increment to force-open the review panel after a turn */
+  /** Increment to force-open the review panel (explicit menu command only) */
   forceOpenReview?: number
+  /**
+   * Increment when a turn produces new review content. Deliberately NOT an
+   * open request: it only badges the rail icon, so the dock never takes over
+   * the window while the user is reading or typing.
+   */
+  reviewSignal?: number
 }): JSX.Element | null {
   const [open, setOpen] = useState<PanelId[]>(() => {
     try {
@@ -533,27 +567,62 @@ export default function RightDock({
       return []
     }
   })
+  // Mirrors `open` so the long-lived agent event handler can check what is open
+  // without listing `open` as a dependency and re-subscribing on every toggle.
+  const openRef = useRef<PanelId[]>(open)
   const [expanded, setExpanded] = useState<PanelId | null>(null)
   const [previewFile, setPreviewFile] = useState<string | null>(null)
   const [previewVersion, setPreviewVersion] = useState(0)
   const [filesRefresh, setFilesRefresh] = useState(0)
+  /**
+   * Panels with content the user has not seen yet. Deliberately in-memory and
+   * per-session: a dot that survived a restart would be noise, not a signal.
+   */
+  const [attn, setAttn] = useState<Set<PanelId>>(() => new Set())
+  const [stackW, setStackW] = usePersistedNumber(WIDTH_KEY, DEFAULT_STACK_W)
+  const [termW, setTermW] = usePersistedNumber(TERM_WIDTH_KEY, DEFAULT_TERM_W)
+  const [weights, setWeights] = usePersistedWeights(WEIGHTS_KEY)
+  const stackRef = useRef<HTMLDivElement | null>(null)
+  // Weights and column height as they were when a divider drag began — the
+  // drag delta is measured from there, so it must not move underneath us.
+  const dragBase = useRef<number[]>([])
+  const dragTotalPx = useRef(0)
+
+  /** Badge `id` unless it is already open, in which case there is nothing to flag. */
+  const markAttn = useCallback((id: PanelId) => {
+    setAttn((prev) => {
+      if (openRef.current.includes(id) || prev.has(id)) return prev
+      const next = new Set(prev)
+      next.add(id)
+      return next
+    })
+  }, [])
+
+  const clearAttn = useCallback((id: PanelId) => {
+    setAttn((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
 
   useEffect(() => {
     localStorage.setItem(STORE_KEY, JSON.stringify(open))
+    openRef.current = open
   }, [open])
 
   // A preview path from another workspace is meaningless — clear on switch.
   useEffect(() => {
     setPreviewFile(null)
     setFilesRefresh((n) => n + 1)
+    setAttn(new Set())
   }, [session?.id])
 
-  // Open the Board by default when entering a team project.
-  useEffect(() => {
-    if (session?.teamId) setOpen((prev) => (prev.includes('board') ? prev : [...prev, 'board']))
-  }, [session?.id, session?.teamId])
-
-  // Follow the agent's file writes: refresh Files, point Preview at the file.
+  // Follow the agent's file writes: refresh Files, point Preview at the file,
+  // and badge whichever of those panels is closed. Note this does NOT open
+  // anything — the previous behaviour of opening Preview on every write is what
+  // made the dock feel like it had a mind of its own.
   useEffect(() => {
     if (!session) return
     return window.harness.agent.onEvent((ev) => {
@@ -561,8 +630,13 @@ export default function RightDock({
       if (!('sessionId' in ev) || ev.sessionId !== session.id) return
       const item = ev.item
       if (item.kind !== 'tool' || item.status !== 'ok') return
+      if (item.name === 'team_task' || item.name === 'project_brief') {
+        markAttn(item.name === 'team_task' ? 'board' : 'brief')
+        return
+      }
       if (item.name === 'write_file' || item.name === 'apply_patch') {
         setFilesRefresh((n) => n + 1)
+        markAttn('files')
         let p = String(item.input?.['path'] ?? '')
         if (!p && item.name === 'apply_patch') {
           // apply_patch has no single path — preview the first file it touches.
@@ -572,40 +646,62 @@ export default function RightDock({
         if (p) {
           setPreviewFile(p)
           setPreviewVersion((n) => n + 1)
+          markAttn('preview')
         }
       }
     })
-  }, [session])
+  }, [session, markAttn])
 
-  const toggle = useCallback((id: PanelId) => {
-    setOpen((prev) => (prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]))
-    setExpanded(null)
-  }, [])
+  const toggle = useCallback(
+    (id: PanelId) => {
+      setOpen((prev) => (prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]))
+      setExpanded(null)
+      clearAttn(id)
+    },
+    [clearAttn]
+  )
 
   const close = useCallback((id: PanelId) => {
     setOpen((prev) => prev.filter((p) => p !== id))
     setExpanded((e) => (e === id ? null : e))
   }, [])
 
-  // force-open terminal
+  /** Open a panel on an explicit request (menu command, agent pin). */
+  const forceOpen = useCallback(
+    (id: PanelId) => {
+      setOpen((prev) => (prev.includes(id) ? prev : [...prev, id]))
+      clearAttn(id)
+    },
+    [clearAttn]
+  )
+
+  // Explicit "open the terminal" (menu, or the agent pinning a job).
   useEffect(() => {
     if (!forceOpenTerm) return
-    setOpen((prev) => (prev.includes('term') ? prev : [...prev, 'term']))
-  }, [forceOpenTerm])
+    forceOpen('term')
+  }, [forceOpenTerm, forceOpen])
 
-  // force-open review after agent turns
+  // Explicit "open the review panel" (menu command only).
   useEffect(() => {
     if (!forceOpenReview) return
-    setOpen((prev) => (prev.includes('review') ? prev : [...prev, 'review']))
+    forceOpen('review')
     setFilesRefresh((n) => n + 1)
-  }, [forceOpenReview])
+  }, [forceOpenReview, forceOpen])
+
+  // A finished turn refreshes review content and badges it — never opens it.
+  useEffect(() => {
+    if (!reviewSignal) return
+    setFilesRefresh((n) => n + 1)
+    markAttn('review')
+  }, [reviewSignal, markAttn])
 
   if (!session) return null
 
+  // Clicking a file IS an explicit request to see it, so this one does open.
   const openFile = (rel: string): void => {
     setPreviewFile(rel)
     setPreviewVersion((n) => n + 1)
-    setOpen((prev) => (prev.includes('preview') ? prev : [...prev, 'preview']))
+    forceOpen('preview')
   }
 
   const stack = STACK_ORDER.filter(
@@ -614,11 +710,47 @@ export default function RightDock({
   const visibleStack = expanded && stack.includes(expanded) ? [expanded] : stack
   const termOpen = open.includes('term')
 
+  /** Snapshot the weights + column height a divider drag starts from. */
+  const beginDividerDrag = (): void => {
+    dragBase.current = visibleStack.map((p) => weights[p] ?? 1)
+    dragTotalPx.current = stackRef.current?.getBoundingClientRect().height ?? 0
+  }
+  const dragDivider = (index: number, deltaPx: number): void => {
+    const next = redistribute(dragBase.current, index, deltaPx, dragTotalPx.current)
+    const merged = { ...weights }
+    visibleStack.forEach((p, i) => {
+      merged[p] = next[i]
+    })
+    setWeights(merged)
+  }
+  const resetDivider = (index: number): void => {
+    const merged = { ...weights }
+    // Give the pair the average of the two, leaving other panels untouched.
+    const a = visibleStack[index]
+    const b = visibleStack[index + 1]
+    const avg = ((weights[a] ?? 1) + (weights[b] ?? 1)) / 2
+    merged[a] = avg
+    merged[b] = avg
+    setWeights(merged)
+  }
+
+  /**
+   * Expanding a panel also widens its column, so Preview becomes a genuine
+   * artifact surface — wide enough to read a rendered page — instead of a solo
+   * panel still trapped in a 330px strip. Chat is squeezed, not hidden. The
+   * user's own width is never lowered, only raised for the duration.
+   */
+  const wideWhenExpanded = (base: number, isExpanded: boolean): number =>
+    isExpanded ? clampColWidth(Math.max(base, Math.round(window.innerWidth * 0.7)), window.innerWidth) : base
+  const stackWidth = wideWhenExpanded(stackW, expanded !== null && expanded !== 'term')
+  const termWidth = wideWhenExpanded(termW, expanded === 'term')
+
   const renderPanel = (id: PanelId): JSX.Element => (
     <Panel
       key={`${id}-${session.id}`}
       id={id}
       expanded={expanded === id}
+      weight={weights[id] ?? 1}
       actions={
         id === 'files' || id === 'review' ? (
           <button className="icon-btn" title="Refresh" onClick={() => setFilesRefresh((n) => n + 1)}>
@@ -654,8 +786,33 @@ export default function RightDock({
 
   return (
     <>
-      {visibleStack.length > 0 && <div className="dock-col">{visibleStack.map(renderPanel)}</div>}
-      {termOpen && <div className={`dock-col${expanded === 'term' ? ' wide' : ''}`}>{renderPanel('term')}</div>}
+      {visibleStack.length > 0 && (
+        <div
+          className="dock-col"
+          ref={stackRef}
+          style={{ ['--dock-w' as string]: `${stackWidth}px` }}
+        >
+          <ColumnResizer width={stackWidth} onResize={setStackW} onReset={() => setStackW(DEFAULT_STACK_W)} />
+          {visibleStack.map((id, i) => (
+            <Fragment key={`${id}-${session.id}`}>
+              {renderPanel(id)}
+              {i < visibleStack.length - 1 && (
+                <PanelDivider
+                  onDragStart={beginDividerDrag}
+                  onDrag={(d) => dragDivider(i, d)}
+                  onReset={() => resetDivider(i)}
+                />
+              )}
+            </Fragment>
+          ))}
+        </div>
+      )}
+      {termOpen && (
+        <div className="dock-col" style={{ ['--dock-w' as string]: `${termWidth}px` }}>
+          <ColumnResizer width={termWidth} onResize={setTermW} onReset={() => setTermW(DEFAULT_TERM_W)} />
+          {renderPanel('term')}
+        </div>
+      )}
       <div className="dock-rail">
         {((session.teamId
           ? ['board', 'brief', 'preview', 'files', 'tasks', 'review', 'term']
@@ -663,10 +820,11 @@ export default function RightDock({
           <button
             key={id}
             className={`rail-btn${open.includes(id) ? ' active' : ''}`}
-            title={TITLES[id]}
+            title={attn.has(id) ? `${TITLES[id]} — new content` : TITLES[id]}
             onClick={() => toggle(id)}
           >
             {ICONS[id]}
+            {attn.has(id) && <span className="rail-dot" aria-hidden="true" />}
           </button>
         ))}
       </div>

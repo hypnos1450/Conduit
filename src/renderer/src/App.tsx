@@ -32,8 +32,13 @@ export default function App(): JSX.Element {
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   const [offline, setOffline] = useState<OfflineStatus | null>(null)
   const [trust, setTrust] = useState<WorkspaceTrustState | null>(null)
+  // forceOpen* are EXPLICIT open requests (menu commands, an agent pin) and do
+  // open the panel. reviewSignal is merely "there is new content here" — it
+  // badges the rail icon and never opens anything, so finishing a turn can't
+  // shove a panel in front of the user mid-work.
   const [forceOpenTerm, setForceOpenTerm] = useState(0)
   const [forceOpenReview, setForceOpenReview] = useState(0)
+  const [reviewSignal, setReviewSignal] = useState(0)
   /** Per-session activity for the sidebar: running / blocked on approval / finished unseen */
   const [sessionStatus, setSessionStatus] = useState<Record<string, 'running' | 'blocked' | 'done'>>({})
   const chatActions = useRef<{
@@ -117,7 +122,7 @@ export default function App(): JSX.Element {
           else delete next[sid]
           return next
         })
-        if (sid === activeIdRef.current) setForceOpenReview((n) => n + 1)
+        if (sid === activeIdRef.current) setReviewSignal((n) => n + 1)
       }
     })
   }, [refreshSessions])
@@ -419,6 +424,7 @@ export default function App(): JSX.Element {
         session={active}
         forceOpenTerm={forceOpenTerm}
         forceOpenReview={forceOpenReview}
+        reviewSignal={reviewSignal}
         onSendToChat={(text) => {
           const block = text.trim()
           if (!block) return

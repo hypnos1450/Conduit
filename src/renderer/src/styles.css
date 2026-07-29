@@ -2037,14 +2037,32 @@ button svg {
   color: var(--accent);
   background: var(--accent-dim);
 }
+.rail-btn {
+  position: relative;
+}
+/* Unseen-content marker. The dock never opens itself; this is the whole signal. */
+.rail-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-sidebar);
+}
 
 .dock-col {
-  width: 330px;
-  min-width: 330px;
+  /* Width is driven by React (persisted per column) — see DockLayout.tsx. The
+     fallback only applies before the first paint reads localStorage. */
+  width: var(--dock-w, 330px);
+  min-width: 0;
+  flex: 0 0 auto;
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative;
   background: var(--bg-sidebar);
   animation: dock-in 0.22s var(--ease);
 }
@@ -2052,14 +2070,57 @@ button svg {
   from { opacity: 0; transform: translateX(12px); }
   to { opacity: 1; transform: none; }
 }
-.dock-col.wide {
-  width: 520px;
-  min-width: 520px;
+/* While dragging, suppress the entry animation and text selection. */
+.dock-col.resizing {
+  animation: none;
+}
+body.dock-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+body.dock-resizing-y {
+  cursor: row-resize;
+  user-select: none;
+}
+
+/* Column width handle: sits on the dock's left edge, wider than it looks so it
+   is actually grabbable. */
+.dock-resize-x {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 7px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+.dock-resize-x:hover,
+.dock-resize-x.active {
+  background: var(--accent);
+  opacity: 0.5;
+}
+
+/* Divider between stacked panels. */
+.dock-resize-y {
+  height: 7px;
+  margin: -3px 0;
+  z-index: 5;
+  flex: 0 0 auto;
+  cursor: row-resize;
+  touch-action: none;
+}
+.dock-resize-y:hover,
+.dock-resize-y.active {
+  background: var(--accent);
+  opacity: 0.5;
 }
 
 .dock-panel {
-  flex: 1 1 0;
-  min-height: 0;
+  /* Weighted, not fixed: the split stays proportional when the window resizes. */
+  flex: var(--panel-w, 1) 1 0;
+  min-height: 90px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   border-bottom: 1px solid var(--border);
@@ -2182,6 +2243,41 @@ button svg {
 .preview-frame {
   flex: 1;
   border: none;
+  background: #fff;
+}
+
+/* ------------------------------------------------------ artifact viewer */
+.artifact-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.artifact-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border);
+}
+.artifact-path {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* A long path reads better from the end — the filename is what matters. */
+  direction: rtl;
+  text-align: left;
+}
+.artifact-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: none;
+  /* An artifact is a document, so give it a page background rather than
+     inheriting the app's dark chrome and rendering black-on-black. */
   background: #fff;
 }
 

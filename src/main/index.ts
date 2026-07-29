@@ -1,5 +1,6 @@
 import { BrowserWindow, Notification, app, session as electronSession, shell } from 'electron'
 import path from 'node:path'
+import { registerArtifactProtocol, registerArtifactScheme } from './artifact'
 import { initLogging, logger } from './logger'
 import { fixPath } from './shell-path'
 import { buildMenu } from './menu'
@@ -10,6 +11,10 @@ import { termManager } from './panels'
 import { sessionStore } from './sessions'
 
 let mainWindow: BrowserWindow | null = null
+
+// Scheme privileges must be declared before the app is ready; the handler itself
+// is installed in whenReady below.
+registerArtifactScheme()
 
 function createWindow(): void {
   const isMac = process.platform === 'darwin'
@@ -95,6 +100,12 @@ if (!app.requestSingleInstanceLock()) {
     // Must precede registerIpc: that kicks off the MCP sync, which spawns
     // servers directly (no shell) and so needs the user's real PATH.
     await fixPath()
+
+    // Serve artifact assets out of each session's workspace, jailed to it.
+    registerArtifactProtocol(async (sessionId) => {
+      const rec = await sessionStore.load(sessionId)
+      return rec?.meta.cwd ?? null
+    })
 
     // Deny all renderer permission requests (camera, geolocation, etc.) — the
     // app needs none of them.

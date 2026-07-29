@@ -4,6 +4,42 @@ All notable changes to Conduit. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.8.0 — 2026-07-29
+
+**A right dock that stays put, resizes, and renders real artifacts — plus a shell the agent can
+actually rely on**
+
+- **The dock no longer opens itself.** Finishing a turn used to shove the Review panel in front of
+  you, every turn, however many times you closed it; entering a team project re-opened the Board the
+  same way. Panels now open only when you ask — the rail icon, the menu, or clicking a file. When a
+  closed panel has something new, its rail icon shows a small dot instead.
+- **Panels are resizable.** Drag the dock's left edge to set its width, and drag the divider between
+  stacked panels to set their heights. Both persist, and double-clicking a handle resets it. Heights
+  are stored as proportions, so resizing the window keeps the split you chose instead of letting one
+  panel swallow the space. Four open panels no longer means four cramped, equal slices.
+- **Preview is an artifact viewer.** A page the agent writes now renders as a real page: its
+  stylesheet, scripts, images, and fonts load, and scripts run. Previously the preview inlined the
+  HTML with no base URL, so every relative `href`/`src` silently failed and a multi-file site showed
+  up unstyled and inert. Expanding the panel widens it to most of the window so there's room to
+  actually look at it, and it reloads itself as the agent edits. Artifacts are served from a
+  workspace-jailed origin under a strict CSP — they can read the workspace and nothing else, and
+  cannot reach the network. A `live: on/off` toggle drops back to the old static render.
+- **`bash` runs a real bash on every platform.** The tool was named `bash` but ran `cmd.exe` on
+  Windows and zsh on macOS, so the POSIX syntax the model writes failed — or worse, quietly returned
+  the wrong answer: `npx tsc --version 2>/dev/null || echo missing` reported a `tsc` that exists as
+  missing. The agent would then retry variations and start writing throwaway scripts to work around
+  a shell it didn't know it was in. It now finds Git Bash on Windows (never WSL's `bash.exe`, which
+  sees a different filesystem) and prefers bash over zsh elsewhere, whose unmatched-glob behaviour
+  aborts commands bash would run. Where no bash exists, the tool description and prompt say so
+  outright instead of letting the model guess.
+- **Commands stop stalling and misreporting.** Editors and credential prompts are neutralised, so
+  `git commit` with no `-m` fails immediately instead of hanging for the full timeout. A failed
+  command now carries a hint naming the actual cause — wrong shell dialect, a missing binary, a glob
+  the shell refused — so the agent corrects that command instead of guessing at another approach.
+  Commands no longer run in a login shell, which on macOS had `path_helper` reorder `PATH` and could
+  resolve a different `node` than your own terminal; the rest of your login shell's environment
+  (`JAVA_HOME`, `GOPATH`, …) is recovered at startup instead.
+
 ## 0.7.1 — 2026-07-26
 
 **Fixed: the agent could freeze permanently on a shell command**
