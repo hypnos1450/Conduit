@@ -57,6 +57,12 @@ describe.skipIf(!hasGit())('git worktree round-trip', () => {
     git(['init', '-q', '-b', 'main'])
     git(['config', 'user.email', 'test@example.com'])
     git(['config', 'user.name', 'Test'])
+    // Git for Windows' installer sets core.autocrlf=true system-wide, so `git
+    // apply` and `git worktree add` would rewrite these fixtures' LF to CRLF
+    // and every exact-content assertion below would fail on Windows only. The
+    // worktree round-trip under test is line-ending agnostic, so pin the
+    // throwaway repo to no conversion and keep the assertions exact.
+    git(['config', 'core.autocrlf', 'false'])
     fs.writeFileSync(path.join(repo, 'base.txt'), 'hello\n')
     git(['add', '-A'])
     git(['commit', '-q', '-m', 'baseline'])
