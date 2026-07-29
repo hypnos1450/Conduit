@@ -8,7 +8,7 @@ import { AgentTeam, CustomAgent, PlanStep, TeamState } from '@shared/types'
 import { ApiToolDef } from './provider'
 import { newFilePreview, unifiedDiff } from './diff'
 import { parsePatch, applyHunks, PatchError } from './apply-patch'
-import { runCommand } from './shell'
+import { resolveShell, runCommand, shellFailureHint } from './shell'
 import { fetchDocPage, loadCatalog, loadIndex, resolveDocset, searchIndex } from './docs'
 import { lspManager } from './lsp/manager'
 import { LspCodeAction, LspDiagnostic, LspDocumentSymbol, LspLocation, LspLocationLink, LspRange } from './lsp/client'
@@ -118,6 +118,29 @@ function dangerousCommand(command: string): string | null {
   return null
 }
 
+/**
+ * The tool description states which shell this machine actually has. A tool
+ * named `bash` is by itself a strong instruction to write bash — so when the
+ * runtime is not bash, the description has to say so loudly and here, where the
+ * model is choosing the command, rather than only in the workspace block.
+ */
+function bashDescription(): string {
+  const shell = resolveShell()
+  const dialect = shell.posix
+    ? `This tool runs ${shell.label}: write ordinary POSIX/bash syntax (pipes, &&, 2>/dev/null, $VAR, globs).`
+    : `IMPORTANT: this machine has no bash. Commands run in ${shell.label}, which REJECTS POSIX syntax — ` +
+      `no ls/cat/grep/head, no 2>/dev/null, no $VAR. Write native ${shell.label} syntax, or use the ` +
+      `read_file / list_dir / glob / grep tools, which work the same everywhere.`
+  return (
+    'Execute a shell command in the workspace. Returns stdout and stderr merged. ' +
+    'Use for builds, tests, git, package managers, and anything without a dedicated tool. ' +
+    'Prefer the dedicated file tools for reading and editing files. ' +
+    `${dialect} Each call is a fresh shell starting in the working directory, so \`cd\` does not persist ` +
+    'between calls — chain with && instead. stdin is closed: pass non-interactive flags (-y, -m "msg") ' +
+    'rather than letting a prompt or editor open, or the command will stall until it is killed.'
+  )
+}
+
 const bashTool: Tool = {
   name: 'bash',
   kind: 'command',
@@ -125,10 +148,7 @@ const bashTool: Tool = {
     type: 'function',
     function: {
       name: 'bash',
-      description:
-        'Execute a shell command in the workspace. Returns stdout and stderr. ' +
-        'Use for builds, tests, git, package managers, and anything without a dedicated tool. ' +
-        'Prefer the dedicated file tools for reading and editing files.',
+      description: bashDescription(),
       parameters: {
         type: 'object',
         properties: {
@@ -166,13 +186,18 @@ const bashTool: Tool = {
     // say so plainly: the model should not assume a dev server is still up.
     const suffix =
       r.reason === 'timeout'
-        ? `\n[command timed out after ${timeoutS}s and was stopped — if it was a long-running process (dev server, watcher), use the monitor tool instead]`
+        ? `\n[command timed out after ${timeoutS}s and was stopped]`
         : r.reason === 'aborted'
           ? '\n[cancelled]'
           : r.code !== 0
             ? `\n[exit code ${r.code}]`
             : ''
-    return { ok: r.reason === 'exit' && r.code === 0, output: (r.output || '(no output)') + suffix }
+    const ok = r.reason === 'exit' && r.code === 0
+    // Explain a failure the model is likely to misread (wrong shell dialect,
+    // missing binary, a glob the shell refused) so it corrects the command
+    // instead of guessing at a different approach.
+    const hint = ok ? null : shellFailureHint(r)
+    return { ok, output: (r.output || '(no output)') + suffix + (hint ? `\n[hint: ${hint}]` : '') }
   }
 }
 
@@ -255,7 +280,8 @@ const monitorTool: Tool = {
               : `watched ${timeoutS}s, command stopped`
             : `command exited with code ${r.code}`
     const ok = r.reason === 'stopped' || (r.reason === 'exit' && r.code === 0)
-    return { ok, output: `${r.output.trim() || '(no output)'}\n[${reason}]` }
+    const hint = ok ? null : shellFailureHint(r)
+    return { ok, output: `${r.output.trim() || '(no output)'}\n[${reason}]${hint ? `\n[hint: ${hint}]` : ''}` }
   }
 }
 

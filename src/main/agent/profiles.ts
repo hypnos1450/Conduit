@@ -3,6 +3,7 @@
 // written for each model's strengths and failure modes.
 import os from 'node:os'
 import { ModelId } from '@shared/types'
+import { resolveShell, ShellSpec } from './shell'
 
 export interface ModelProfile {
   id: ModelId
@@ -81,6 +82,15 @@ Weigh each action by how reversible it is and how far it reaches. Local, reversi
 - When unsure about an API signature, config option, or syntax detail, check the docs tool (versioned official documentation) instead of guessing from memory — and prefer it over web search for pure reference lookups; web search remains right for news, releases, and anything docs doesn't cover.
 - Tool outputs may be truncated. If output looks cut off, re-run with a narrower scope (offset/limit, tighter grep) rather than guessing at the missing part.
 
+# Running commands
+The exact shell your commands run in is stated under Workspace below. Write for THAT shell; do not assume.
+- Each bash call is a FRESH shell starting in the working directory. \`cd\` does NOT carry over to the next call, so make every command self-contained — chain with \`&&\` (\`cd sub && npm test\`) rather than relying on a directory change sticking.
+- stdin is closed. A command that waits for input or opens an editor cannot be answered and will stall until it is killed, so always pass the non-interactive flag up front: \`-y\`/\`--yes\`, \`git commit -m "msg"\`, \`--no-pager\`, \`npm init -y\`. For a process that stays up by design (dev server, watcher, tail), use monitor, not bash.
+- One command per call, and prefer the dedicated tools over shell equivalents: read_file over \`cat\`, list_dir over \`ls\`, glob over \`find\`, grep over \`grep\`/\`findstr\`. They behave identically on every platform and return structured, truncation-aware output — reach for the shell for builds, tests, git, and package managers.
+- NEVER write a script file to run something that fits in a shell command. If a command fails, read the error text and fix THAT command — a failure is not a reason to switch mechanism. Writing a wrapper script to work around a shell error is always the wrong move; it hides the real problem and leaves a stray file behind.
+- Quote paths containing spaces. Prefer absolute paths, or paths relative to the working directory, over \`../..\` chains.
+- The \`[hint: …]\` line on a failed command names the actual cause — read it and act on it rather than retrying a variation.
+
 # Working style
 - On any task needing 3+ distinct steps, publish a short plan with update_plan before you start, mark steps done as you complete them, and revise it if the plan changes. The user watches this checklist live — keep it honest. Skip it for quick answers and one-step tasks.
 - Verify your work. After editing, check the changed files with lsp diagnostics (instant, per-file), run diagnostics for project-wide type/lint errors, plus the relevant build or test, before declaring success. If verification fails, fix it — do not report broken work as done.
@@ -114,15 +124,57 @@ Alongside factual memory you keep skills: reusable playbooks managed with the sk
 - Skills are focused playbooks (one workflow each), not documentation dumps.
 - Some skills (typically user-installed) bundle resource files — scripts, templates, reference docs. Reading such a skill lists them with their directory; run or read them from there when the playbook calls for it.`
 
+/**
+ * Command-syntax rules for a machine with no bash. Only ever emitted on such a
+ * machine, and stated in the imperative because the tool is *named* bash — the
+ * model's default assumption has to be overridden explicitly, not hinted at.
+ */
+function nonPosixShellBlock(shell: ShellSpec): string {
+  const table =
+    shell.kind === 'powershell'
+      ? [
+          '- List files: `Get-ChildItem` (NOT ls) — or use the list_dir tool',
+          '- Read a file: `Get-Content` (NOT cat) — or use the read_file tool',
+          '- Search text: `Select-String` (NOT grep) — or use the grep tool',
+          '- First N lines: `Select-Object -First N` (NOT head)',
+          '- File exists: `Test-Path` (NOT test -f)',
+          '- Delete: `Remove-Item` (NOT rm)',
+          '- Env var: `$env:NAME` (NOT $NAME)',
+          '- Discard stderr: `2>$null` (NOT 2>/dev/null)',
+          '- Chaining with `&&` and `||` works in PowerShell 7+; use `;` if unsure'
+        ]
+      : [
+          '- List files: `dir` (NOT ls) — or use the list_dir tool',
+          '- Read a file: `type` (NOT cat) — or use the read_file tool',
+          '- Search text: `findstr` (NOT grep) — or use the grep tool',
+          '- Delete: `del` (NOT rm)',
+          '- Env var: `%NAME%` (NOT $NAME)',
+          '- Discard stderr: `2>nul` (NOT 2>/dev/null)',
+          '- No pipelines to head/tail, no $(...) substitution, no for/do loops in POSIX form'
+        ]
+  return (
+    `# Shell syntax on this machine — NOT bash\n` +
+    `This machine has no bash installed, so despite the tool's name your commands run in ${shell.label}. ` +
+    `POSIX syntax will fail here, sometimes silently with a wrong answer rather than an error. Use:\n` +
+    table.join('\n') +
+    `\nWhen a task only needs to read, list, or search files, use the read_file / list_dir / glob / grep tools instead — ` +
+    `they are platform-independent and avoid this entirely.`
+  )
+}
+
 function workspaceBlock(opts: SystemPromptOpts): string {
+  const shell = resolveShell()
   const parts = [
     `# Workspace`,
     `- Working directory: ${opts.cwd}`,
     `- Platform: ${process.platform} (${os.release()})`,
-    `- Shell: ${process.platform === 'win32' ? 'cmd' : 'zsh'}`,
+    `- Shell for the bash tool: ${shell.label}${
+      shell.posix ? ' — POSIX/bash syntax, as you would normally write it' : ' — NOT a POSIX shell, see below'
+    }`,
     `- Today's date: ${new Date().toISOString().slice(0, 10)}`
   ]
   if (opts.gitBranch) parts.push(`- Git: ${opts.gitBranch}`)
+  if (!shell.posix) parts.push('', nonPosixShellBlock(shell))
   if (opts.customInstructions?.trim()) {
     parts.push('', '# User instructions', opts.customInstructions.trim())
   }
