@@ -4,6 +4,30 @@ All notable changes to Conduit. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.9.0 — 2026-08-04
+
+**A real browser for agent output — plus the hardening that shipped with it**
+
+- **Built-in browser pane.** HTML files opened from the Files panel (or anything
+  served from a session workspace) now render in a full browser context inside
+  the right dock: a `webview` with an address bar, back/forward/reload/stop,
+  and "open in system browser". Workspace pages are served loopback
+  (`http://127.0.0.1/ws/<sessionId>/…`) with **no CSP**, so CDNs, webfonts,
+  `fetch()`, and JS frameworks all work, and relative assets resolve. Each
+  session is jailed to its own workspace; the pane uses an isolated storage
+  partition; popups are pushed to the system browser. The old sandboxed
+  artifact iframe (and its `live`/static toggle) is gone.
+- **Fixed: artifact preview was a blank screen.** The app's renderer CSP had no
+  `frame-src`, so `conduit-artifact://` frames were blocked by
+  `default-src 'self'`. Added `frame-src 'self' conduit-artifact:`.
+- **Hardened the artifact path jail.** UNC (`//…`) and Windows-drive (`/C:/…`)
+  absolute paths are now refused before reaching the workspace resolver.
+- **Dependency audit clean.** `npm audit fix` bumped 16 build-time deps
+  (electron-builder/vite/undici trees); 0 vulnerabilities remain.
+- **Agent guidance updated** (`GROK.md`): previews now run with full network,
+  and a note to keep secrets out of HTML you intend anyone to open.
+- **Tests** for the workspace-server path jail and URL mapping.
+
 ## 0.8.0 — 2026-07-29
 
 **A right dock that stays put, resizes, and renders real artifacts — plus a shell the agent can

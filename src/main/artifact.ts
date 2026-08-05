@@ -100,10 +100,13 @@ export function artifactFilePath(cwd: string, urlPathname: string): string | nul
   } catch {
     return null // malformed percent-encoding
   }
-  rel = rel.replace(/^\/+/, '')
   // A backslash is a path separator on Windows, so normalise before jailing —
   // otherwise `..\\..\\x` would slip past a forward-slash-only check.
   rel = rel.replace(/\\/g, '/')
+  // Refuse filesystem-absolute forms (UNC `//...`, Windows drive `/C:/...`)
+  // before stripping — they can't be jailed to cwd and signal an escape attempt.
+  if (rel.startsWith('//') || /^\/[A-Za-z]:\//.test(rel)) return null
+  rel = rel.replace(/^\/+/, '')
   const abs = safeResolve(cwd, rel || '.')
   if (!abs) return null
   try {

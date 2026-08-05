@@ -17,7 +17,7 @@ import {
   TeamTask,
   ToolStatus
 } from '@shared/types'
-import ArtifactView from './ArtifactView'
+import BuiltinBrowser from './BuiltinBrowser'
 import {
   clampColWidth,
   ColumnResizer,
@@ -225,52 +225,47 @@ function highlight(code: string, ext: string): string {
 
 function PreviewPanel(props: { sessionId: string; file: string | null; version: number }): JSX.Element {
   const [data, setData] = useState<FilePreview | null>(null)
-  // HTML renders as a live artifact by default — assets resolve and scripts run,
-  // contained by the protocol's path jail and CSP (see main/artifact.ts). The
-  // toggle drops back to the old inert srcDoc render for a page that misbehaves.
-  const [live, setLive] = useState(true)
+  const [browserUrl, setBrowserUrl] = useState<string | null>(null)
+
+  const ext = props.file?.split('.').pop()?.toLowerCase() ?? ''
+  const isHtml = ext === 'html' || ext === 'htm'
 
   useEffect(() => {
-    setLive(true)
+    setBrowserUrl(null)
     if (!props.file) {
       setData(null)
       return
     }
-    void window.harness.panels.readFile(props.sessionId, props.file).then(setData)
-  }, [props.sessionId, props.file, props.version])
+    if (isHtml) {
+      // HTML opens in the built-in browser: a full browser context served from
+      // the loopback workspace server with no CSP (see main/workspaceServer.ts).
+      setData(null)
+      void window.harness.browser.workspaceUrl(props.sessionId, props.file).then(setBrowserUrl)
+    } else {
+      void window.harness.panels.readFile(props.sessionId, props.file).then(setData)
+    }
+  }, [props.sessionId, props.file, props.version, isHtml])
 
   if (!props.file) {
     return <div className="dock-empty">Select a file in Files — or let the agent write one — to preview it here.</div>
   }
-  if (!data) return <div className="dock-empty">Loading…</div>
-
-  const ext = props.file.split('.').pop()?.toLowerCase() ?? ''
-  const isHtml = ext === 'html' || ext === 'htm'
-
-  // A live artifact bypasses the text read entirely: the page fetches its own
-  // assets over the protocol, so there is nothing to inline here.
-  if (isHtml && data.kind === 'text' && live) {
+  if (isHtml) {
     return (
       <div className="preview-wrap">
-        <ArtifactView sessionId={props.sessionId} file={props.file} version={props.version} />
-        <div className="preview-path">
-          <button className="mini-btn" title="Render statically, without scripts" onClick={() => setLive(false)}>
-            live: on
-          </button>
-        </div>
+        {browserUrl ? (
+          <BuiltinBrowser key={browserUrl} src={browserUrl} />
+        ) : (
+          <div className="dock-empty">Loading…</div>
+        )}
       </div>
     )
   }
+  if (!data) return <div className="dock-empty">Loading…</div>
 
   return (
     <div className="preview-wrap">
       <div className="preview-path" title={props.file}>
         <span className="preview-path-text">{props.file}</span>
-        {isHtml && data.kind === 'text' && (
-          <button className="mini-btn" title="Render as a live artifact" onClick={() => setLive(true)}>
-            live: off
-          </button>
-        )}
       </div>
       {data.kind === 'error' && <div className="dock-empty">{data.message}</div>}
       {data.kind === 'binary' && <div className="dock-empty">Binary file ({Math.round(data.size / 1024)} KB)</div>}
@@ -283,10 +278,7 @@ function PreviewPanel(props: { sessionId: string; file: string | null; version: 
         </div>
       )}
       {data.kind === 'text' &&
-        (isHtml ? (
-          // Static fallback: no scripts, no asset resolution — deliberately inert.
-          <iframe className="preview-frame" sandbox="" srcDoc={data.content} title={props.file} />
-        ) : ext === 'md' || ext === 'markdown' ? (
+        (ext === 'md' || ext === 'markdown' ? (
           <div className="preview-scroll md">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{data.content}</ReactMarkdown>
           </div>

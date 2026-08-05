@@ -7,3 +7,6 @@ dist/
 
 # Local tooling
 .claude/
+
+# VM provisioning secrets (public repo — never commit the private key)
+provisioning/keys/

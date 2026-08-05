@@ -37,7 +37,11 @@ function createWindow(): void {
       nodeIntegration: false,
       // Renderer runs sandboxed; all privileged work goes through the
       // context-isolated preload bridge and validated IPC handlers.
-      sandbox: true
+      sandbox: true,
+      // The built-in browser pane is a <webview>: a separate, isolated
+      // WebContents that may navigate the open web and the loopback workspace
+      // server. The app page never navigates anywhere itself.
+      webviewTag: true
     }
   })
 

@@ -95,6 +95,10 @@ const api: HarnessApi = {
     listDir: (sessionId, rel) => ipcRenderer.invoke('panels:listDir', sessionId, rel),
     readFile: (sessionId, rel) => ipcRenderer.invoke('panels:readFile', sessionId, rel)
   },
+  browser: {
+    workspaceUrl: (sessionId, rel) => ipcRenderer.invoke('browser:workspaceUrl', sessionId, rel),
+    openExternal: (url) => ipcRenderer.invoke('browser:openExternal', url)
+  },
   term: {
     open: (sessionId) => ipcRenderer.invoke('term:open', sessionId),
     run: (sessionId, command, opts) => ipcRenderer.invoke('term:run', sessionId, command, opts),

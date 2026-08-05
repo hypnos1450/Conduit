@@ -794,6 +794,12 @@ export interface HarnessApi {
     /** Read a workspace file for the Preview panel */
     readFile(sessionId: string, rel: string): Promise<FilePreview>
   }
+  browser: {
+    /** URL for opening a workspace file in the built-in browser (full power, no CSP). */
+    workspaceUrl(sessionId: string, rel: string): Promise<string | null>
+    /** Open a URL in the system browser. */
+    openExternal(url: string): Promise<void>
+  }
   term: {
     /**
      * Ensure a live shell for the session (PTY interactive shell, or spawn

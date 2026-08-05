@@ -21,6 +21,7 @@ import { MemoryTarget, memoryStore } from './agent/memory'
 import { skillStore } from './agent/skills'
 import { importSkillFolder, installFromGitHub } from './agent/skill-install'
 import { listDir, readFilePreview, termManager } from './panels'
+import { workspaceFileUrl } from './workspaceServer'
 import { ensureCommandsDir, listCommands, resolveCommand } from './commands'
 import { mcpManager } from './agent/mcp'
 import { installMcpFromInput, previewMcpInstall } from './agent/mcp-install'
@@ -581,6 +582,16 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     const rec = await sessionStore.load(sessionId)
     if (!rec) return { kind: 'error', message: 'Session not found.' }
     return readFilePreview(rec.meta.cwd, String(rel ?? ''))
+  })
+
+  // ---- built-in browser (full-power workspace preview + web browsing)
+  handle('browser:workspaceUrl', async (_e, sessionId: string, rel: string) => {
+    if (!isValidId(sessionId)) return null
+    return workspaceFileUrl(sessionId, String(rel ?? ''))
+  })
+  handle('browser:openExternal', async (_e, url: string) => {
+    const u = String(url ?? '')
+    if (u.startsWith('https:') || u.startsWith('http:')) await shell.openExternal(u)
   })
 
   // Terminal: session must exist; job ids validated; command length capped.

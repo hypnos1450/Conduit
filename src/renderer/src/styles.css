@@ -2164,6 +2164,39 @@ body.dock-resizing-y {
   font-size: 12px;
   padding: 12px;
 }
+.browser {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.browser-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.browser-addr {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-input, rgba(128, 128, 128, 0.12));
+  color: inherit;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12.5px;
+}
+.browser-addr:focus {
+  outline: none;
+  border-color: var(--accent, #58a6ff);
+}
+.browser-webview {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  background: #fff;
+}
 
 /* files panel */
 .files-tree {

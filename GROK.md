@@ -1,6 +1,6 @@
 # Conduit
 
-Cross-platform Electron desktop agent for xAI **Grok 4.5** (menu: “Grok 4.5”, wire `grok-4.5`, internal id `grok-build-0.1`) and **Grok 4.3**. SuperGrok / X Premium+ OAuth (or API-key fallback); permissioned tool loop on the user’s machine. Talks to xAI **Responses API** (`/v1/responses`). Version in `package.json` (currently 0.5.x). Repo: `hypnos1450/Conduit`.
+Cross-platform Electron desktop agent for xAI **Grok 4.5** (menu: “Grok 4.5”, wire `grok-4.5`, internal id `grok-build-0.1`) and **Grok 4.3**. SuperGrok / X Premium+ OAuth (or API-key fallback); permissioned tool loop on the user’s machine. Talks to xAI **Responses API** (`/v1/responses`). Version in `package.json` (currently 0.9.x). Repo: `hypnos1450/Conduit`.
 
 ## Layout
 
@@ -72,6 +72,23 @@ npm run rebuild:pty      # if node-pty native module breaks
 - **Sessions:** schema-versioned (`SCHEMA_VERSION`); add migrations in `sessions.ts` `migrate()` as `if (v < N)`.
 - **Project doc load order:** `AGENTS.md` → `CLAUDE.md` → `GROK.md` (first non-empty wins); truncated at 6k chars; frozen per session.
 - Keep changes minimal; match neighboring code. No drive-by refactors.
+
+## Preview artifacts (agent-written HTML)
+
+HTML files opened from a session open in the app's **built-in browser** pane.
+Workspace files are served over `http://127.0.0.1:<port>/ws/<sessionId>/...`
+with **no CSP**, so pages have full network + scripting: CDNs, webfonts,
+`fetch()`, and JS frameworks all work, and relative assets resolve. Pages are
+jailed to the session's workspace folder.
+
+Two things to keep in mind:
+
+- A page the user opens runs with your code and full network access. It can only
+  see the workspace you pointed the browser at, but it can reach the internet —
+  so don't embed secrets in HTML you intend anyone to open.
+- The hardened `conduit-artifact://` scheme (jail + CSP, no network) still
+  exists as a sandboxed fallback should a preview ever need to be fully
+  isolated again (e.g. rendering untrusted third-party HTML).
 
 ## Gotchas
 
