@@ -7,6 +7,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
 import type { TermJobInfo, TermSnapshot } from '@shared/types'
 import '@xterm/xterm/css/xterm.css'
+import { truncatePath } from '../lib/sessions'
 
 interface Props {
   sessionId: string
@@ -19,11 +20,6 @@ interface Props {
   onRequestOpen?: () => void
 }
 
-function shortPath(p: string, max = 42): string {
-  if (!p) return ''
-  if (p.length <= max) return p
-  return '…' + p.slice(-(max - 1))
-}
 
 export default function TerminalPanel(props: Props): JSX.Element {
   const { sessionId, workspaceCwd, onOpenFile, onSendToChat } = props
@@ -384,7 +380,7 @@ export default function TerminalPanel(props: Props): JSX.Element {
         </div>
         <div className="term-actions">
           <span className="term-cwd" title={cwd}>
-            {shortPath(cwd)}
+            {truncatePath(cwd)}
           </span>
           <span className="term-mode" title={mode === 'pty' ? 'Interactive PTY' : 'Spawn runner'}>
             {shell || mode}

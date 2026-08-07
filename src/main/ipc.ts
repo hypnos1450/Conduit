@@ -38,9 +38,13 @@ import {
   loadSettingsFromDisk,
   mergeMcpSecrets,
   readSecretsBlob,
+  redactMcpEnv,
+  restoreMcpEnv,
   splitMcpSecrets,
   writeSecretsBlob
 } from './security'
+import { searchSessions } from './session-search'
+import { focusSession, type Channel } from '@shared/channels'
 import { appendAudit, clearAudit, exportAuditMarkdown, listAudit } from './audit'
 import { addTrust, getTrust, isTrusted, removeTrust } from './workspace-trust'
 import { createPullRequest, detectRepo } from './github'
@@ -53,7 +57,8 @@ import type {
   GitHubPrDraft,
   OfflineStatus,
   PaletteAction,
-  SessionSearchHit
+  SessionData,
+  TurnChangeSummary
 } from '@shared/types'
 
 const runs = new Map<string, AgentRun>()
@@ -109,15 +114,7 @@ function saveSettings(s: Settings): void {
 
 /** Settings returned to the renderer — MCP env values redacted. */
 function publicSettingsView(s: Settings): Settings {
-  return {
-    ...s,
-    mcpServers: s.mcpServers.map((srv) => ({
-      ...srv,
-      env: srv.env
-        ? Object.fromEntries(Object.keys(srv.env).map((k) => [k, srv.env![k] ? '••••••••' : '']))
-        : undefined
-    }))
-  }
+  return { ...s, mcpServers: redactMcpEnv(s.mcpServers) }
 }
 
 let settings = DEFAULT_SETTINGS
@@ -158,7 +155,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         if (win.isMinimized()) win.restore()
         win.show()
         win.focus()
-        if (sessionId) win.webContents.send('menu:action', `focus-session:${sessionId}`)
+        if (sessionId) win.webContents.send('menu:action', focusSession(sessionId))
       })
       n.show()
     })()
@@ -171,7 +168,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return !!win && e.sender === win.webContents
   }
   const handle = (
-    channel: string,
+    channel: Channel,
     // Variadic dispatch registry: each handler declares its own typed args
     // (e.g. (_e, id: string)). `unknown[]` would reject those via parameter
     // contravariance, so `any[]` is the pragmatic type for the boundary — the
@@ -226,7 +223,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     const rec = sessionStore.create({ cwd, model, defaultModel: settings.defaultModel })
     return rec.meta
   })
-  handle('sessions:load', async (_e, sessionId: string) => {
+  // Annotated so the hand-built shape below is checked against the contract the
+  // renderer is promised, rather than merely resembling it.
+  handle('sessions:load', async (_e, sessionId: string): Promise<SessionData | null> => {
     if (!isValidId(sessionId)) return null
     const rec = await sessionStore.load(sessionId)
     if (!rec) return null
@@ -397,47 +396,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       emit({ type: 'user-question', sessionId, request: { requestId, sessionId, ...q } })
     })
 
-  handle(
-    'agent:send',
-    async (_e, sessionId: string, text: string, attachments?: Attachments) => {
-      assertId(sessionId, 'sessionId')
-      if (typeof text !== 'string' || text.length > 500_000) throw new Error('Invalid message')
-      const rec = await sessionStore.load(sessionId)
-      if (!rec) throw new Error('Session not found')
-      if (runs.has(sessionId)) throw new Error('Agent is already running in this session')
-      if (
-        !isTrusted(rec.meta.cwd, settings.trustedWorkspaces, settings.requireWorkspaceTrust)
-      ) {
-        throw new Error(
-          'This workspace is not trusted. Trust it from the banner or Settings → Security before running the agent.'
-        )
-      }
-
-      const run = new AgentRun(
-        rec,
-        settings,
-        emit,
-        (request: PermissionRequest) => bindPermission(sessionId, request),
-        () => saveSettings(settings),
-        (q) => bindQuestion(sessionId, q)
-      )
-      runs.set(sessionId, run)
-      void run.run(text, attachments).finally(() => runs.delete(sessionId))
-    }
-  )
-  handle('agent:cancel', (_e, sessionId: string) => {
-    if (!isValidId(sessionId)) return
-    runs.get(sessionId)?.cancel()
-  })
-  handle('agent:isRunning', (_e, sessionId: string) =>
-    isValidId(sessionId) ? runs.has(sessionId) : false
-  )
-  handle('agent:queue', (_e, sessionId: string, text: string) => {
-    if (!isValidId(sessionId) || typeof text !== 'string') return false
-    return runs.get(sessionId)?.queueMessage(text) ?? false
-  })
-
-  // Shared launcher for a fresh run (used by send, retry, edit-resend).
+  /**
+   * The one place a fresh run starts — send, retry and edit-resend all route
+   * here, so the concurrency guard and the workspace-trust gate cannot drift
+   * apart between them.
+   */
   const startRun = async (
     sessionId: string,
     text: string,
@@ -448,7 +411,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     if (!rec) throw new Error('Session not found')
     if (runs.has(sessionId)) throw new Error('Agent is already running in this session')
     if (!isTrusted(rec.meta.cwd, settings.trustedWorkspaces, settings.requireWorkspaceTrust)) {
-      throw new Error('This workspace is not trusted. Trust it before running the agent.')
+      throw new Error(
+        'This workspace is not trusted. Trust it from the banner or Settings → Security before running the agent.'
+      )
     }
     const run = new AgentRun(
       rec,
@@ -461,6 +426,22 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     runs.set(sessionId, run)
     void run.run(text, attachments).finally(() => runs.delete(sessionId))
   }
+
+  handle('agent:send', (_e, sessionId: string, text: string, attachments?: Attachments) => {
+    if (typeof text !== 'string' || text.length > 500_000) throw new Error('Invalid message')
+    return startRun(sessionId, text, attachments)
+  })
+  handle('agent:cancel', (_e, sessionId: string) => {
+    if (!isValidId(sessionId)) return
+    runs.get(sessionId)?.cancel()
+  })
+  handle('agent:isRunning', (_e, sessionId: string) =>
+    isValidId(sessionId) ? runs.has(sessionId) : false
+  )
+  handle('agent:queue', (_e, sessionId: string, text: string) => {
+    if (!isValidId(sessionId) || typeof text !== 'string') return false
+    return runs.get(sessionId)?.queueMessage(text) ?? false
+  })
 
   handle('agent:retry', async (_e, sessionId: string) => {
     assertId(sessionId, 'sessionId')
@@ -748,22 +729,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       })
       if (choice.response !== 0) return { ok: false, error: 'Install cancelled.' }
 
-      const safeOpts = {
-        name: opts?.name ? String(opts.name).slice(0, 64) : undefined,
-        env:
-          opts?.env && typeof opts.env === 'object'
-            ? Object.fromEntries(
-                Object.entries(opts.env)
-                  .filter(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(k) && typeof v === 'string')
-                  .map(([k, v]) => [k, String(v).slice(0, 8192)])
-                  .slice(0, 40)
-              )
-            : undefined,
-        extraArgs: Array.isArray(opts?.extraArgs)
-          ? opts!.extraArgs!.filter((a) => typeof a === 'string').map((a) => a.slice(0, 512)).slice(0, 20)
-          : undefined
-      }
-      const result = await installMcpFromInput(String(input ?? '').slice(0, 2000), safeOpts)
+      // installMcpFromInput sanitizes these itself — see sanitizeMcpInstallOptions.
+      const result = await installMcpFromInput(String(input ?? '').slice(0, 2000), opts ?? {})
       if (!result.ok || !result.server) return result
       const next = [
         ...settings.mcpServers.filter((s) => s.name !== result.server!.name),
@@ -785,18 +752,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     )
     // Restore real env values when renderer sends redacted placeholders.
     if (Array.isArray(patch?.mcpServers)) {
-      patch = {
-        ...patch,
-        mcpServers: patch.mcpServers.map((incoming) => {
-          const existing = settings.mcpServers.find((s) => s.name === incoming.name)
-          if (!incoming.env || !existing?.env) return incoming
-          const merged: Record<string, string> = { ...(existing.env ?? {}) }
-          for (const [k, v] of Object.entries(incoming.env)) {
-            if (v && v !== '••••••••') merged[k] = v
-          }
-          return { ...incoming, env: merged }
-        })
-      }
+      patch = { ...patch, mcpServers: restoreMcpEnv(patch.mcpServers, settings.mcpServers) }
     }
     const next = applySettingsPatch(settings, patch)
     const nextMcp = JSON.stringify(
@@ -853,65 +809,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   })
 
   // ---- sessions: search / plan-only / turn changes
-  handle('sessions:search', async (_e, query: string, limit?: number) => {
-    const q = String(query ?? '').trim().toLowerCase().slice(0, 200)
-    if (!q) return []
-    const max = Math.min(Number(limit) || 30, 100)
-    const hits: SessionSearchHit[] = []
-    for (const meta of sessionStore.list()) {
-      if (hits.length >= max) break
-      if (meta.title.toLowerCase().includes(q)) {
-        hits.push({
-          sessionId: meta.id,
-          title: meta.title,
-          cwd: meta.cwd,
-          updatedAt: meta.updatedAt,
-          snippet: meta.title,
-          matchField: 'title'
-        })
-        continue
-      }
-      if (meta.cwd.toLowerCase().includes(q)) {
-        hits.push({
-          sessionId: meta.id,
-          title: meta.title,
-          cwd: meta.cwd,
-          updatedAt: meta.updatedAt,
-          snippet: meta.cwd,
-          matchField: 'cwd'
-        })
-        continue
-      }
-      if (meta.digest?.toLowerCase().includes(q)) {
-        hits.push({
-          sessionId: meta.id,
-          title: meta.title,
-          cwd: meta.cwd,
-          updatedAt: meta.updatedAt,
-          snippet: meta.digest.slice(0, 160),
-          matchField: 'digest'
-        })
-        continue
-      }
-      // Light message scan for open/cached sessions only
-      const rec = await sessionStore.load(meta.id).catch(() => null)
-      if (!rec) continue
-      for (const item of rec.items.slice(-40)) {
-        if (item.kind === 'user' && item.text.toLowerCase().includes(q)) {
-          hits.push({
-            sessionId: meta.id,
-            title: meta.title,
-            cwd: meta.cwd,
-            updatedAt: meta.updatedAt,
-            snippet: item.text.slice(0, 160),
-            matchField: 'message'
-          })
-          break
-        }
-      }
-    }
-    return hits
-  })
+  handle('sessions:search', (_e, query: string, limit?: number) =>
+    searchSessions(
+      sessionStore.list(),
+      async (id) => (await sessionStore.load(id))?.items ?? null,
+      query,
+      limit
+    )
+  )
   handle('sessions:setPlanOnly', async (_e, sessionId: string, planOnly: boolean) => {
     assertId(sessionId, 'sessionId')
     const rec = await sessionStore.load(sessionId)
@@ -919,16 +824,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     rec.meta.planOnly = !!planOnly
     await sessionStore.save(rec)
   })
-  handle('sessions:turnChanges', async (_e, sessionId: string) => {
-    if (!isValidId(sessionId)) return null
-    const rec = await sessionStore.load(sessionId)
-    if (!rec?.lastTurnChanges?.length) return null
-    return {
-      sessionId,
-      files: rec.lastTurnChanges,
-      plan: rec.plan
+  handle(
+    'sessions:turnChanges',
+    async (_e, sessionId: string): Promise<TurnChangeSummary | null> => {
+      if (!isValidId(sessionId)) return null
+      const rec = await sessionStore.load(sessionId)
+      if (!rec?.lastTurnChanges?.length) return null
+      return { sessionId, files: rec.lastTurnChanges, plan: rec.plan }
     }
-  })
+  )
 
   // ---- workspace trust
   handle('workspace:getTrust', (_e, cwd: string) =>

@@ -11,7 +11,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { McpServerConfig } from '@shared/types'
+import {
+  McpServerConfig,
+  type McpEnvNeed,
+  type McpInstallPreview,
+  type McpInstallResult
+} from '@shared/types'
 import { logger } from '../logger'
 import { parseGitHubUrl } from './skill-install'
 
@@ -20,41 +25,10 @@ const log = logger('mcp-install')
 
 const MAX_TARBALL_BYTES = 80 * 1024 * 1024
 
-export interface McpEnvNeed {
-  key: string
-  /** Human hint shown next to the input */
-  description?: string
-  required: boolean
-  /** Placeholder / example value (never a real secret) */
-  placeholder?: string
-}
-
-export interface McpInstallPreview {
-  ok: boolean
-  error?: string
-  /** Suggested unique server name */
-  name?: string
-  /** How we plan to launch it */
-  command?: string
-  args?: string[]
-  /** Env keys the user should fill in before enabling */
-  envNeeds?: McpEnvNeed[]
-  /** Optional notes (runtime, install method, caveats) */
-  notes?: string[]
-  /** Source label for the UI */
-  source?: string
-  /** True when this is a pure npm package (no GitHub clone needed) */
-  npmPackage?: string
-}
-
-export interface McpInstallResult {
-  ok: boolean
-  error?: string
-  server?: McpServerConfig
-  /** Env keys still empty after install (user should fill them) */
-  missingEnv?: string[]
-  notes?: string[]
-}
+// These shapes cross the IPC seam, so @shared/types owns them. They used to be
+// declared a second time here and had already drifted — the shared copy grew
+// `preview` and `status` fields this one never got.
+export type { McpEnvNeed, McpInstallPreview, McpInstallResult } from '@shared/types'
 
 // ---------------------------------------------------------------- known recipes
 
@@ -754,12 +728,48 @@ export function finalizeMcpInstall(
 }
 
 /** One-shot: preview + finalize for simple cases (no interactive secrets). */
+export interface McpInstallOptions {
+  name?: string
+  env?: Record<string, string>
+  extraArgs?: string[]
+}
+
+/**
+ * Bound and shape-check install options.
+ *
+ * These arrive from the renderer, so they are untrusted: env keys must look
+ * like env keys, and every value and list is capped so a malformed payload
+ * can't be written into settings or handed to a spawned process. Applied
+ * inside {@link installMcpFromInput} so no caller can skip it.
+ */
+export function sanitizeMcpInstallOptions(opts?: McpInstallOptions): McpInstallOptions {
+  const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
+  return {
+    name: opts?.name ? String(opts.name).slice(0, 64) : undefined,
+    env:
+      opts?.env && typeof opts.env === 'object'
+        ? Object.fromEntries(
+            Object.entries(opts.env)
+              .filter(([k, v]) => ENV_KEY_RE.test(k) && typeof v === 'string')
+              .map(([k, v]) => [k, String(v).slice(0, 8192)])
+              .slice(0, 40)
+          )
+        : undefined,
+    extraArgs: Array.isArray(opts?.extraArgs)
+      ? opts.extraArgs
+          .filter((a) => typeof a === 'string')
+          .map((a) => a.slice(0, 512))
+          .slice(0, 20)
+      : undefined
+  }
+}
+
 export async function installMcpFromInput(
   input: string,
-  opts: { name?: string; env?: Record<string, string>; extraArgs?: string[] } = {}
+  opts: McpInstallOptions = {}
 ): Promise<McpInstallResult & { preview?: McpInstallPreview }> {
   const preview = await previewMcpInstall(input)
   if (!preview.ok) return { ok: false, error: preview.error, preview }
-  const result = finalizeMcpInstall(preview, opts)
+  const result = finalizeMcpInstall(preview, sanitizeMcpInstallOptions(opts))
   return { ...result, preview }
 }

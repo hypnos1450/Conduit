@@ -6,7 +6,8 @@
 import { Fragment, JSX, useCallback, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import hljs from 'highlight.js/lib/common'
+import { highlightOrEscape } from '../lib/highlight'
+import { pendingGates } from '../lib/team'
 import {
   ChatItem,
   FileEntry,
@@ -214,14 +215,6 @@ function FilesPanel(props: {
 
 // ----------------------------------------------------------------- preview
 
-function highlight(code: string, ext: string): string {
-  try {
-    if (hljs.getLanguage(ext)) return hljs.highlight(code, { language: ext, ignoreIllegals: true }).value
-    return hljs.highlightAuto(code).value
-  } catch {
-    return code.replace(/&/g, '&amp;').replace(/</g, '&lt;')
-  }
-}
 
 function PreviewPanel(props: { sessionId: string; file: string | null; version: number }): JSX.Element {
   const [data, setData] = useState<FilePreview | null>(null)
@@ -285,7 +278,10 @@ function PreviewPanel(props: { sessionId: string; file: string | null; version: 
         ) : (
           <div className="preview-scroll">
             <pre className="preview-code">
-              <code className="hljs" dangerouslySetInnerHTML={{ __html: highlight(data.content, ext) }} />
+              <code
+                className="hljs"
+                dangerouslySetInnerHTML={{ __html: highlightOrEscape(data.content, ext) }}
+              />
             </pre>
             {data.truncated && <div className="dock-empty">…truncated</div>}
           </div>
@@ -304,12 +300,16 @@ interface TaskRow {
   ts: number
 }
 
-function toRow(item: ChatItem): TaskRow | null {
+export function toRow(item: ChatItem): TaskRow | null {
   if (item.kind !== 'tool') return null
   const input = item.input ?? {}
-  const detail = String(input['path'] ?? input['command'] ?? input['pattern'] ?? input['url'] ?? '')
+  // The tool names its own paths; fall back to raw input for older items.
+  const detail =
+    item.targets?.[0] ??
+    String(input['path'] ?? input['command'] ?? input['pattern'] ?? input['url'] ?? '')
   return { id: item.id, name: item.name, detail, status: item.status, ts: item.ts }
 }
+
 
 function TasksPanel(props: { sessionId: string }): JSX.Element {
   const [rows, setRows] = useState<TaskRow[]>([])
@@ -402,14 +402,7 @@ function BoardPanel(props: { sessionId: string }): JSX.Element {
   if (!info.tasks.length) {
     return <div className="dock-empty">No tasks yet — the orchestrator creates them as the project starts.</div>
   }
-  const pendingGates = (t: TeamTask): string[] => {
-    if (t.status === 'done' || t.requiresReview === false) return []
-    return info.reviewGates.filter((role) => {
-      const rs = t.reviews.filter((r) => r.role.toLowerCase() === role.toLowerCase())
-      const latest = rs[rs.length - 1]
-      return !latest || latest.verdict !== 'pass'
-    })
-  }
+  const gatesFor = (t: TeamTask): string[] => pendingGates(t, info.reviewGates)
   return (
     <div className="board-panel">
       {BOARD_STATUSES.map((st) => {
@@ -421,7 +414,7 @@ function BoardPanel(props: { sessionId: string }): JSX.Element {
               {st.replace('-', ' ')} <span className="board-count">{col.length}</span>
             </div>
             {col.map((t) => {
-              const pend = pendingGates(t)
+              const pend = gatesFor(t)
               const gated = t.status !== 'done' && t.requiresReview !== false
               return (
                 <div key={t.id} className={`board-card ${st}`} title={t.description ?? ''}>
@@ -629,12 +622,9 @@ export default function RightDock({
       if (item.name === 'write_file' || item.name === 'apply_patch') {
         setFilesRefresh((n) => n + 1)
         markAttn('files')
-        let p = String(item.input?.['path'] ?? '')
-        if (!p && item.name === 'apply_patch') {
-          // apply_patch has no single path — preview the first file it touches.
-          const m = /^\*\*\* (?:Add|Update) File: (.+)$/m.exec(String(item.input?.['patch'] ?? ''))
-          p = m ? m[1].trim() : ''
-        }
+        // The tool reports the paths it named; a patch previews its first file.
+        // (Older items predate `targets` and still carry only raw input.)
+        const p = item.targets?.[0] ?? String(item.input?.['path'] ?? '')
         if (p) {
           setPreviewFile(p)
           setPreviewVersion((n) => n + 1)

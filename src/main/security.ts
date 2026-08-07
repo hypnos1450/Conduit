@@ -203,11 +203,25 @@ function sanitizeTeam(raw: unknown): AgentTeam | null {
 /**
  * Merge a partial settings patch into current settings with runtime validation.
  * Unknown keys are dropped. Invalid values keep the previous setting.
+ *
+ * Boolean settings are handled generically off {@link DEFAULT_SETTINGS}, so a
+ * new on/off toggle needs no entry here — declaring its default is enough.
+ * Everything with a real constraint (an enum, a length cap, a nested shape) is
+ * still written out below, because those genuinely differ per setting.
+ * `test/security.test.ts` asserts every declared setting is reachable, so a key
+ * that needs a hand-written rule cannot silently arrive without one.
  */
 export function applySettingsPatch(current: Settings, patch: unknown): Settings {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return current
   const p = patch as Record<string, unknown>
   const next: Settings = { ...current }
+
+  // Every boolean setting: accepts a boolean, rejects everything else.
+  for (const [key, fallback] of Object.entries(DEFAULT_SETTINGS)) {
+    if (typeof fallback === 'boolean' && typeof p[key] === 'boolean') {
+      ;(next as unknown as Record<string, unknown>)[key] = p[key]
+    }
+  }
 
   if (typeof p.defaultModel === 'string' && MODELS.has(p.defaultModel as ModelId)) {
     next.defaultModel = p.defaultModel as ModelId
@@ -221,22 +235,9 @@ export function applySettingsPatch(current: Settings, patch: unknown): Settings 
   if (typeof p.customInstructions === 'string') {
     next.customInstructions = p.customInstructions.slice(0, 20_000)
   }
-  if (typeof p.enableWebSearch === 'boolean') next.enableWebSearch = p.enableWebSearch
-  if (typeof p.memoryEnabled === 'boolean') next.memoryEnabled = p.memoryEnabled
-  if (typeof p.memoryWriteApproval === 'boolean') next.memoryWriteApproval = p.memoryWriteApproval
-  if (typeof p.enableSubagents === 'boolean') next.enableSubagents = p.enableSubagents
-  if (typeof p.enableTeamBuilders === 'boolean') next.enableTeamBuilders = p.enableTeamBuilders
-  if (typeof p.autoUpdate === 'boolean') next.autoUpdate = p.autoUpdate
-  if (typeof p.notifications === 'boolean') next.notifications = p.notifications
   if (typeof p.agentProfile === 'string' && PROFILES.has(p.agentProfile as AgentProfileId)) {
     next.agentProfile = p.agentProfile as AgentProfileId
   }
-  if (typeof p.testAfterEdit === 'boolean') next.testAfterEdit = p.testAfterEdit
-  if (typeof p.multiModelRouting === 'boolean') next.multiModelRouting = p.multiModelRouting
-  if (typeof p.repoMapEnabled === 'boolean') next.repoMapEnabled = p.repoMapEnabled
-  if (typeof p.requireWorkspaceTrust === 'boolean') next.requireWorkspaceTrust = p.requireWorkspaceTrust
-  if (typeof p.auditLogEnabled === 'boolean') next.auditLogEnabled = p.auditLogEnabled
-  if (typeof p.reducedMotion === 'boolean') next.reducedMotion = p.reducedMotion
   if (typeof p.testCommand === 'string') next.testCommand = p.testCommand.slice(0, 500)
   if (typeof p.updateChannel === 'string' && CHANNELS.has(p.updateChannel as UpdateChannel)) {
     next.updateChannel = p.updateChannel as UpdateChannel
@@ -355,6 +356,50 @@ export function mergeMcpSecrets(
   }))
 }
 
+/**
+ * Stand-in shown to the renderer in place of a stored MCP env value. The
+ * renderer round-trips it back on save, so redact and restore have to agree on
+ * it exactly — which is why they live together rather than at opposite ends of
+ * the IPC layer.
+ */
+export const MCP_ENV_MASK = '••••••••'
+
+/** MCP env values replaced by {@link MCP_ENV_MASK}, for sending to the renderer. */
+export function redactMcpEnv(servers: McpServerConfig[]): McpServerConfig[] {
+  return servers.map((srv) => ({
+    ...srv,
+    env: srv.env
+      ? Object.fromEntries(Object.keys(srv.env).map((k) => [k, srv.env![k] ? MCP_ENV_MASK : '']))
+      : undefined
+  }))
+}
+
+/**
+ * Put the real values back where the renderer echoed the mask, so saving a
+ * settings form the user never opened cannot blank out their credentials.
+ *
+ * Additive on purpose: the result starts from what is already stored and only
+ * genuine edits are laid over it. A masked value, an empty value, or a key the
+ * renderer omits all leave the stored secret alone — losing a credential to a
+ * partial form submission is far worse than keeping a stale one. Removing a
+ * server's env therefore happens by removing the server, which
+ * {@link splitMcpSecrets} prunes on save.
+ */
+export function restoreMcpEnv(
+  incoming: McpServerConfig[],
+  current: McpServerConfig[]
+): McpServerConfig[] {
+  return incoming.map((srv) => {
+    const existing = current.find((s) => s.name === srv.name)
+    if (!srv.env || !existing?.env) return srv
+    const merged: Record<string, string> = { ...existing.env }
+    for (const [k, v] of Object.entries(srv.env)) {
+      if (v && v !== MCP_ENV_MASK) merged[k] = v
+    }
+    return { ...srv, env: merged }
+  })
+}
+
 // ---------------------------------------------------------------- SSRF
 
 const PRIVATE_HOST_RE =
@@ -447,6 +492,45 @@ export function writeAllowKey(toolName: string, absPath: string, cwd: string): s
   }
   if (!rel || rel.startsWith('..')) rel = path.basename(absPath)
   return `${toolName}:@${rel.slice(0, 180)}`
+}
+
+/** The parts of a Tool this module needs; structural, to stay import-free. */
+export interface AllowKeyTool {
+  name: string
+  kind: string
+  targets?(input: Record<string, unknown>): string[] | undefined
+}
+
+/**
+ * The allow keys that must ALL be remembered before a call may skip its
+ * permission prompt. `null` means the call can never be allowlisted.
+ *
+ * A write tool is keyed once per file it names, so "always allow" grants no
+ * more than the files the user is looking at. When such a tool cannot say what
+ * it will touch, the answer is null rather than its bare name — a name-scoped
+ * key is what lets a single approval cover every later call to every file.
+ */
+export function toolAllowKeys(
+  tool: AllowKeyTool,
+  input: Record<string, unknown>,
+  cwd: string
+): string[] | null {
+  if (tool.name === 'bash') {
+    const key = bashAllowKey(String(input.command ?? ''))
+    return key ? [key] : null
+  }
+  if (tool.kind !== 'write') return [tool.name]
+  const targets = tool.targets?.(input)
+  if (!targets?.length) return null
+  const keys: string[] = []
+  for (const rel of targets) {
+    try {
+      keys.push(writeAllowKey(tool.name, resolveInWorkspace(cwd, rel), cwd))
+    } catch {
+      return null // outside the workspace — always re-prompt (and the tool will fail)
+    }
+  }
+  return keys
 }
 
 export async function pathExists(p: string): Promise<boolean> {

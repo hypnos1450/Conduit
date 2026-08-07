@@ -17,6 +17,7 @@ import RightDock from './components/RightDock'
 import CommandPalette from './components/CommandPalette'
 import SessionSearch from './components/SessionSearch'
 import { XIcon } from './components/Icons'
+import { parseFocusSession } from '@shared/channels'
 
 export default function App(): JSX.Element {
   const [auth, setAuth] = useState<AuthState | null>(null)
@@ -248,8 +249,9 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     return window.harness.onMenuAction((action) => {
-      if (action.startsWith('focus-session:')) {
-        setActiveId(action.slice('focus-session:'.length))
+      const focused = parseFocusSession(action)
+      if (focused) {
+        setActiveId(focused)
         return
       }
       if (action === 'command-palette') {

@@ -2,24 +2,7 @@ import { JSX, useEffect, useMemo, useRef, useState } from 'react'
 import { SessionMeta } from '@shared/types'
 import { SparkLogo } from './Chat'
 import { GearIcon, HomeIcon, PanelLeftIcon, PlusIcon, SearchIcon, XIcon } from './Icons'
-
-/** Bucket sessions into Today / Yesterday / Previous 7 days / Older by updatedAt. */
-function groupSessions(sessions: SessionMeta[]): { label: string; items: SessionMeta[] }[] {
-  const now = new Date()
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-  const day = 86_400_000
-  const buckets: Record<string, SessionMeta[]> = { Today: [], Yesterday: [], 'Previous 7 days': [], Older: [] }
-  for (const s of sessions) {
-    const t = s.updatedAt ?? s.createdAt ?? 0
-    if (t >= startOfToday) buckets['Today'].push(s)
-    else if (t >= startOfToday - day) buckets['Yesterday'].push(s)
-    else if (t >= startOfToday - 7 * day) buckets['Previous 7 days'].push(s)
-    else buckets['Older'].push(s)
-  }
-  return Object.entries(buckets)
-    .filter(([, items]) => items.length)
-    .map(([label, items]) => ({ label, items }))
-}
+import { groupSessions } from '../lib/sessions'
 
 export default function Sidebar(props: {
   sessions: SessionMeta[]

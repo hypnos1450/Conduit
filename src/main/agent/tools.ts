@@ -60,9 +60,28 @@ export interface ToolResult {
 export interface Tool {
   name: string
   kind: ToolKind
+  /**
+   * May this call run in the concurrent batch alongside other tools?
+   * Defaults to `kind === 'read'`. Set it false on a tool that touches none of
+   * the user's files but still must not be fanned out — one that blocks on a
+   * human, spawns further model calls, or mutates session state.
+   */
+  concurrent?: boolean
   def: ApiToolDef
   /** One-line human summary for the permission prompt / tool card */
   summarize(input: Record<string, unknown>): string
+  /**
+   * The workspace-relative paths these arguments name, for a `kind: 'write'`
+   * tool. Two callers need this and neither should re-parse the tool's own
+   * argument format: the permission check, which scopes the "always allow" key
+   * per file, and the renderer's tool card.
+   *
+   * Return undefined when the targets are not knowable from the arguments
+   * alone — an lsp rename edits whatever files the server names. Such a call is
+   * never allowlisted and always prompts, because there is no honest key to
+   * remember it by.
+   */
+  targets?(input: Record<string, unknown>): string[] | undefined
   /** Optional diff/content preview computed before execution */
   preview?(input: Record<string, unknown>, ctx: ToolContext): Promise<string | undefined>
   /** For kind 'memory': whether this particular call is a write (reads skip approval) */
@@ -560,6 +579,10 @@ function formatApplied(verb: string, files: AppliedFile[], resourceOps: string[]
 const lspEditTool: Tool = {
   name: 'lsp_edit',
   kind: 'write',
+  // No `targets`: `path` names where the cursor is, not what gets edited — a
+  // rename rewrites every file the server resolves the symbol into. There is no
+  // key that honestly covers that, so this tool always prompts. It reports what
+  // it actually touched afterwards via ctx.onFileWritten.
   def: {
     type: 'function',
     function: {
@@ -777,6 +800,10 @@ const writeFileTool: Tool = {
     }
   },
   summarize: (input) => `Write ${input.path}`,
+  targets: (input) => {
+    const p = String(input.path ?? '')
+    return p ? [p] : undefined
+  },
   preview: async (input, ctx) => {
     const file = resolveInCwd(ctx.cwd, str(input, 'path'))
     const content = String(input.content ?? '')
@@ -788,11 +815,13 @@ const writeFileTool: Tool = {
     }
   },
   run: async (input, ctx) => {
-    const file = resolveInCwd(ctx.cwd, str(input, 'path'))
+    const rel = str(input, 'path')
+    const file = resolveInCwd(ctx.cwd, rel)
     const content = String(input.content ?? '')
     await ctx.onBeforeMutate?.(file)
     await fsp.mkdir(path.dirname(file), { recursive: true })
     await fsp.writeFile(file, content, 'utf8')
+    ctx.onFileWritten?.(rel, 'write')
     return { ok: true, output: `Wrote ${content.length} chars to ${file}` }
   }
 }
@@ -879,6 +908,26 @@ async function computePatch(cwd: string, patchText: string): Promise<PatchChange
   return changes
 }
 
+/**
+ * Every path a patch names, including a rename's destination. Uses the real
+ * parser rather than a header regex, so the permission key and the tool card
+ * can never disagree with what `run` will actually touch. Undefined when the
+ * patch doesn't parse — the call is about to fail anyway, and guessing here
+ * would hand out an allow key for files that were never named.
+ */
+function applyPatchTargets(input: Record<string, unknown>): string[] | undefined {
+  let ops: ReturnType<typeof parsePatch>
+  try {
+    ops = parsePatch(String(input.patch ?? ''))
+  } catch {
+    return undefined
+  }
+  const paths = ops.flatMap((op) =>
+    op.kind === 'update' && op.moveTo ? [op.path, op.moveTo] : [op.path]
+  )
+  return paths.length ? paths : undefined
+}
+
 const applyPatchTool: Tool = {
   name: 'apply_patch',
   kind: 'write',
@@ -895,9 +944,11 @@ const applyPatchTool: Tool = {
     }
   },
   summarize: (input) => {
-    const m = String(input.patch ?? '').match(/^\*\*\* (Add|Update|Delete) File: /gm)
-    return `apply_patch: ${m ? m.length : 0} file${m && m.length === 1 ? '' : 's'}`
+    const files = applyPatchTargets(input) ?? []
+    if (files.length === 1) return `apply_patch: ${files[0]}`
+    return `apply_patch: ${files.length} files`
   },
+  targets: (input) => applyPatchTargets(input),
   preview: async (input, ctx) => {
     const res = await computePatch(ctx.cwd, str(input, 'patch'))
     if (typeof res === 'string') return undefined
@@ -919,14 +970,17 @@ const applyPatchTool: Tool = {
         await ctx.onBeforeMutate?.(c.abs)
         await fsp.mkdir(path.dirname(c.abs), { recursive: true })
         await fsp.writeFile(c.abs, c.after, 'utf8')
+        ctx.onFileWritten?.(c.rel, 'write')
         done.push(`added ${c.rel}`)
       } else if (c.action === 'delete') {
         await ctx.onBeforeMutate?.(c.abs)
         await fsp.rm(c.abs, { force: true })
+        ctx.onFileWritten?.(c.rel, 'edit')
         done.push(`deleted ${c.rel}`)
       } else if (c.action === 'update') {
         await ctx.onBeforeMutate?.(c.abs)
         await fsp.writeFile(c.abs, c.after, 'utf8')
+        ctx.onFileWritten?.(c.rel, 'edit')
         done.push(`updated ${c.rel}`)
       } else {
         await ctx.onBeforeMutate?.(c.abs)
@@ -934,6 +988,7 @@ const applyPatchTool: Tool = {
         await fsp.mkdir(path.dirname(c.toAbs), { recursive: true })
         await fsp.writeFile(c.toAbs, c.after, 'utf8')
         if (c.toAbs !== c.abs) await fsp.rm(c.abs, { force: true })
+        ctx.onFileWritten?.(c.toRel, 'edit')
         done.push(`renamed ${c.rel} → ${c.toRel}`)
       }
     }
@@ -1394,6 +1449,7 @@ const PLAN_STATUSES = new Set(['pending', 'active', 'done'])
 const updatePlanTool: Tool = {
   name: 'update_plan',
   kind: 'read',
+  concurrent: false, // mutates session plan state; must not race other calls
   def: {
     type: 'function',
     function: {
@@ -1705,6 +1761,7 @@ const recallHistoryTool: Tool = {
 const askUserTool: Tool = {
   name: 'ask_user',
   kind: 'read', // interacting with the user is not a machine mutation — no approval gate
+  concurrent: false, // blocks on a human; batching it stalls every tool beside it
   def: {
     type: 'function',
     function: {

@@ -3,10 +3,10 @@
 // investigation tasks concurrently, each a bounded loop with the read-only
 // toolset only (no writes, no shell, no recursion), and returns their
 // findings to the parent agent.
-import { ApiMessage, streamCompletion } from './provider'
+import { runBoundedLoop } from './bounded-loop'
 import { profileFor } from './profiles'
 import { skillStore } from './skills'
-import { Tool, ToolContext, ToolResult, subagentTools } from './tools'
+import { Tool, subagentTools } from './tools'
 
 const SUBAGENT_MAX_TURNS = 12
 const MAX_PARALLEL = 8
@@ -30,68 +30,37 @@ async function runOne(
 ): Promise<string> {
   const profile = profileFor(persona?.model ?? 'grok-build-0.1')
   const tools = subagentTools(!!persona?.skills.length)
-  const byName = new Map(tools.map((t) => [t.name, t]))
   let system = SUBAGENT_SYSTEM
   if (persona) {
     system += `\n\nYou are operating as the "${persona.name}" agent. Role instructions:\n${persona.instructions.trim()}`
     const idx = skillStore.index(persona.skills)
     if (idx) system += `\n\n${idx}\nRead a skill's full playbook with read_skill before relying on it.`
   }
-  const messages: ApiMessage[] = [
-    { role: 'system', content: `${system}\n\nWorkspace: ${cwd}` },
-    { role: 'user', content: task }
-  ]
-
-  for (let turn = 0; turn < SUBAGENT_MAX_TURNS; turn++) {
-    if (signal.aborted) return '(subagent cancelled)'
-    const result = await streamCompletion({
-      model: profile.apiModel,
-      messages,
-      tools: tools.map((t) => t.def),
-      maxOutputTokens: 4000,
-      temperature: profile.temperature,
-      signal
-    })
-    messages.push({
-      role: 'assistant',
-      content: result.content || null,
-      ...(result.toolCalls.length ? { tool_calls: result.toolCalls } : {})
-    })
-    if (result.toolCalls.length === 0) return result.content || '(no findings)'
-
+  const run = await runBoundedLoop({
+    system: `${system}\n\nWorkspace: ${cwd}`,
+    task,
+    tools,
     // Read-only tools — safe to run concurrently with no permission gate.
-    const ctx: ToolContext = { cwd, sessionId: 'subagent', signal }
-    const outputs = await Promise.all(
-      result.toolCalls.map(async (call) => {
-        const tool = byName.get(call.function.name)
-        if (!tool) return { id: call.id, output: `Unknown tool ${call.function.name}` }
-        let input: Record<string, unknown>
-        try {
-          input = JSON.parse(call.function.arguments || '{}')
-        } catch {
-          return { id: call.id, output: 'Invalid tool arguments.' }
-        }
-        let res: ToolResult
-        try {
-          res = await tool.run(input, ctx)
-        } catch (err) {
-          res = { ok: false, output: err instanceof Error ? err.message : String(err) }
-        }
-        return { id: call.id, output: res.output }
-      })
-    )
-    for (const call of result.toolCalls) {
-      const o = outputs.find((x) => x.id === call.id)
-      messages.push({ role: 'tool', tool_call_id: call.id, content: o?.output ?? 'No output.' })
-    }
-  }
-  return '(subagent hit its turn limit without concluding)'
+    concurrent: true,
+    ctx: { cwd, sessionId: 'subagent', signal },
+    model: profile.apiModel,
+    temperature: profile.temperature,
+    maxOutputTokens: 4000,
+    maxTurns: SUBAGENT_MAX_TURNS,
+    signal
+  })
+  if (run.outcome === 'cancelled') return '(subagent cancelled)'
+  if (run.outcome === 'turn-limit') return '(subagent hit its turn limit without concluding)'
+  return run.content || '(no findings)'
 }
 
 export const spawnAgentTool: Tool = {
   name: 'spawn_agent',
   // Read-only internally, so it never needs a permission prompt.
   kind: 'read',
+  // But not batchable: this fans out its own concurrent model calls, so letting
+  // the parent batch it too multiplies the fan-out.
+  concurrent: false,
   def: {
     type: 'function',
     function: {
