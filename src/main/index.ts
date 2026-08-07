@@ -9,6 +9,7 @@ import { registerIpc } from './ipc'
 import { lspManager } from './agent/lsp/manager'
 import { termManager } from './panels'
 import { sessionStore } from './sessions'
+import { focusSession } from '@shared/channels'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -135,7 +136,7 @@ if (!app.requestSingleInstanceLock()) {
           if (mainWindow.isMinimized()) mainWindow.restore()
           mainWindow.show()
           mainWindow.focus()
-          mainWindow.webContents.send('menu:action', `focus-session:${sessionId}`)
+          mainWindow.webContents.send('menu:action', focusSession(sessionId))
           mainWindow.webContents.send('menu:action', 'open-terminal')
         })
         n.show()

@@ -14,6 +14,7 @@ import {
   UserQuestion
 } from '@shared/types'
 import ItemView, { DiffView } from './Items'
+import { shortPath } from '../lib/sessions'
 import {
   BookIcon,
   BugIcon,
@@ -1039,10 +1040,6 @@ export default function Chat(props: {
   )
 }
 
-export function shortPath(p: string): string {
-  const parts = p.replace(/\\/g, '/').split('/').filter(Boolean)
-  return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : p
-}
 
 export function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`

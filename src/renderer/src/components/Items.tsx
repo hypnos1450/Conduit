@@ -1,23 +1,14 @@
 import { JSX, memo, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import hljs from 'highlight.js/lib/common'
+import { highlight } from '../lib/highlight'
 import { ChatItem } from '@shared/types'
 
 /** Fenced code block with highlight.js. Falls back to plain text on failure. */
 function CodeBlock({ className, children }: { className?: string; children?: unknown }): JSX.Element {
   const code = String(children ?? '').replace(/\n$/, '')
   const lang = /language-(\w+)/.exec(className ?? '')?.[1]
-  const html = useMemo(() => {
-    try {
-      if (lang && hljs.getLanguage(lang)) {
-        return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
-      }
-      return hljs.highlightAuto(code).value
-    } catch {
-      return null
-    }
-  }, [code, lang])
+  const html = useMemo(() => highlight(code, lang), [code, lang])
   if (html === null) return <code className={className}>{code}</code>
   return <code className={`hljs ${className ?? ''}`} dangerouslySetInnerHTML={{ __html: html }} />
 }
@@ -180,7 +171,7 @@ function hostOf(url: string): string {
 }
 
 /** A small glyph per tool family. Plain unicode keeps it dependency-free. */
-function toolIcon(name: string): string {
+export function toolIcon(name: string): string {
   if (name === 'bash') return '❯_'
   if (name === 'lsp') return '⌖'
   if (name === 'read_file') return '◫'
@@ -316,8 +307,17 @@ function roleEmoji(name: string): string {
   return '🧑‍💼'
 }
 
-function summarize(item: Extract<ChatItem, { kind: 'tool' }>): string {
+/**
+ * What the tool card shows under the tool name. Tools author their own summary
+ * (ChatItem.summary), so the switch below is only the fallback for items saved
+ * before that field existed.
+ */
+export function summarize(item: Extract<ChatItem, { kind: 'tool' }>): string {
   const input = item.input
+  if (item.targets?.length) {
+    const t = item.targets
+    return t.length === 1 ? t[0] : `${t.length} files: ${t.slice(0, 3).join(', ')}${t.length > 3 ? '…' : ''}`
+  }
   switch (item.name) {
     case 'bash':
       return String(input.command ?? '')

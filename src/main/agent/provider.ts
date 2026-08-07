@@ -110,7 +110,7 @@ export async function probeAccess(): Promise<{ ok: boolean; status?: number; mes
   }
 }
 
-export async function streamCompletion(opts: {
+export interface StreamOptions {
   model: string
   messages: ApiMessage[]
   tools?: ApiToolDef[]
@@ -126,7 +126,16 @@ export async function streamCompletion(opts: {
   jsonSchema?: { name: string; schema: Record<string, unknown> }
   signal?: AbortSignal
   handlers?: StreamHandlers
-}): Promise<CompletionResult> {
+}
+
+/**
+ * One model turn. The seam every agent loop talks to, so a run can be driven by
+ * something other than the network: {@link streamCompletion} is the xAI
+ * adapter, and tests supply a scripted one.
+ */
+export type StreamFn = (opts: StreamOptions) => Promise<CompletionResult>
+
+export const streamCompletion: StreamFn = async function streamCompletion(opts) {
   let attempt = 0
   let refreshed = false
   for (;;) {

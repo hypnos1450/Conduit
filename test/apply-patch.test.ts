@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { parsePatch, applyHunks, PatchError, type PatchOp } from '../src/main/agent/apply-patch'
+import { toolByName } from '../src/main/agent/tools'
 
 function patch(body: string): PatchOp[] {
   return parsePatch(`*** Begin Patch\n${body}\n*** End Patch`)
@@ -87,5 +88,34 @@ describe('applyHunks', () => {
 
   it('throws when the context cannot be found', () => {
     expect(() => applyHunks(file, updateHunks('*** Update File: f\n@@\n-nonexistent line\n+x'))).toThrow(PatchError)
+  })
+})
+
+describe('apply_patch tool declaration', () => {
+  const applyPatch = toolByName.get('apply_patch')!
+  const targets = (body: string): string[] | undefined =>
+    applyPatch.targets?.({ patch: `*** Begin Patch\n${body}\n*** End Patch` })
+
+  it('names every file the patch touches, including deletes', () => {
+    expect(
+      targets('*** Add File: a.ts\n+x\n*** Update File: b.ts\n@@\n-old\n+new\n*** Delete File: c.ts')
+    ).toEqual(['a.ts', 'b.ts', 'c.ts'])
+  })
+
+  it('names both sides of a rename', () => {
+    expect(targets('*** Update File: old.ts\n*** Move to: new.ts\n@@\n-a\n+b')).toEqual([
+      'old.ts',
+      'new.ts'
+    ])
+  })
+
+  it('names nothing when the patch does not parse, rather than guessing', () => {
+    expect(applyPatch.targets?.({ patch: 'not a patch' })).toBeUndefined()
+    expect(applyPatch.targets?.({})).toBeUndefined()
+  })
+
+  it('summarizes from the same parse the permission key uses', () => {
+    const one = { patch: '*** Begin Patch\n*** Delete File: c.ts\n*** End Patch' }
+    expect(applyPatch.summarize(one)).toBe('apply_patch: c.ts')
   })
 })

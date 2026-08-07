@@ -1,3 +1,4 @@
+import type { AppAction, MenuMessage } from './channels'
 // Shared types across main, preload, and renderer.
 
 export type ModelId = 'grok-4.3' | 'grok-build-0.1'
@@ -318,6 +319,17 @@ export type ChatItem =
       output?: string
       /** Diff or content preview shown in the card / permission prompt */
       preview?: string
+      /**
+       * One-line summary authored by the tool itself. Absent on items saved
+       * before this field existed, so readers keep a local fallback.
+       */
+      summary?: string
+      /**
+       * Workspace-relative paths the call named, authored by the tool. Lets the
+       * renderer show and preview what a call touched without parsing that
+       * tool's argument format.
+       */
+      targets?: string[]
       durationMs?: number
     }
   | { kind: 'compaction'; id: string; ts: number; summary: string }
@@ -511,7 +523,7 @@ export interface SessionSearchHit {
 }
 
 export interface PaletteAction {
-  id: string
+  id: AppAction
   label: string
   section?: string
   shortcut?: string
@@ -911,7 +923,7 @@ export interface HarnessApi {
     get(): Promise<OfflineStatus>
     probe(): Promise<OfflineStatus>
   }
-  onMenuAction(cb: (action: string) => void): () => void
+  onMenuAction(cb: (action: MenuMessage) => void): () => void
   /** Host platform ('darwin' | 'win32' | 'linux') */
   platform: string
   /** Absolute filesystem path of a dropped/selected File ('' if unavailable) */

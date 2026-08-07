@@ -3,10 +3,12 @@
 // channel; the renderer decides what they do in the current view.
 import { BrowserWindow, Menu, MenuItemConstructorOptions, app, shell } from 'electron'
 import { logsDirectory } from './logger'
+import type { MenuMessage } from '@shared/channels'
 
 export function buildMenu(getWindow: () => BrowserWindow | null): void {
   const isMac = process.platform === 'darwin'
-  const send = (action: string): void => getWindow()?.webContents.send('menu:action', action)
+  const send = (action: MenuMessage): void =>
+    getWindow()?.webContents.send('menu:action', action)
 
   const template: MenuItemConstructorOptions[] = [
     ...(isMac

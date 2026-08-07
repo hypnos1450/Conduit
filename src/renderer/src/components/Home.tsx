@@ -17,28 +17,15 @@ import {
   UsersIcon
 } from './Icons'
 
-const DAY = 86_400_000
-
-function relTime(ts: number): string {
-  const d = Date.now() - ts
-  if (d < 60_000) return 'just now'
-  if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`
-  if (d < DAY) return `${Math.floor(d / 3_600_000)}h ago`
-  if (d < 7 * DAY) return `${Math.floor(d / DAY)}d ago`
-  return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-}
-
-function baseName(p: string): string {
-  const parts = p.replace(/\\/g, '/').split('/').filter(Boolean)
-  return parts[parts.length - 1] ?? p
-}
-
-interface Project {
-  cwd: string
-  name: string
-  lastUsed: number
-  sessionCount: number
-}
+import {
+  baseName,
+  groupProjects,
+  lastActive,
+  recentSessions,
+  relTime,
+  sessionStats,
+  type Project
+} from '../lib/sessions'
 
 export default function Home(props: {
   sessions: SessionMeta[]
@@ -52,42 +39,9 @@ export default function Home(props: {
 }): JSX.Element {
   const { sessions } = props
 
-  const stats = useMemo(() => {
-    // eslint-disable-next-line react-hooks/purity -- coarse "this week" stat; render-time clock staleness is irrelevant
-    const now = Date.now()
-    let messages = 0
-    let tokens = 0
-    let week = 0
-    for (const s of sessions) {
-      messages += s.messageCount ?? 0
-      tokens += (s.totalInputTokens ?? 0) + (s.totalOutputTokens ?? 0)
-      if (now - (s.updatedAt ?? s.createdAt) < 7 * DAY) week++
-    }
-    return { sessions: sessions.length, messages, tokens, week }
-  }, [sessions])
-
-  const projects = useMemo<Project[]>(() => {
-    const byCwd = new Map<string, Project>()
-    for (const s of sessions) {
-      const t = s.updatedAt ?? s.createdAt
-      const cur = byCwd.get(s.cwd)
-      if (cur) {
-        cur.sessionCount++
-        if (t > cur.lastUsed) cur.lastUsed = t
-      } else {
-        byCwd.set(s.cwd, { cwd: s.cwd, name: baseName(s.cwd), lastUsed: t, sessionCount: 1 })
-      }
-    }
-    return [...byCwd.values()].sort((a, b) => b.lastUsed - a.lastUsed).slice(0, 6)
-  }, [sessions])
-
-  const recent = useMemo(
-    () =>
-      [...sessions]
-        .sort((a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt))
-        .slice(0, 5),
-    [sessions]
-  )
+  const stats = useMemo(() => sessionStats(sessions), [sessions])
+  const projects = useMemo<Project[]>(() => groupProjects(sessions), [sessions])
+  const recent = useMemo(() => recentSessions(sessions), [sessions])
 
   const dateLine = new Date().toLocaleDateString(undefined, {
     weekday: 'long',
@@ -245,9 +199,7 @@ export default function Home(props: {
                     <span className="home-session-project" title={s.cwd}>
                       {baseName(s.cwd)}
                     </span>
-                    <span className="home-session-time">
-                      {relTime(s.updatedAt ?? s.createdAt)}
-                    </span>
+                    <span className="home-session-time">{relTime(lastActive(s))}</span>
                   </button>
                 ))}
               </div>

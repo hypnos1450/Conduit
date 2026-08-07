@@ -12,6 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import electronUpdater from 'electron-updater'
 import { logger } from './logger'
+import type { Channel, EventChannel } from '@shared/channels'
 
 const { autoUpdater } = electronUpdater
 const log = logger('updater')
@@ -154,7 +155,7 @@ export function initUpdater(getWindow: () => BrowserWindow | null): void {
     return !!win && e.sender === win.webContents
   }
   const handle = (
-    channel: string,
+    channel: Channel,
     fn: (e: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown
   ): void => {
     ipcMain.handle(channel, (e, ...args) => {
@@ -163,7 +164,7 @@ export function initUpdater(getWindow: () => BrowserWindow | null): void {
     })
   }
 
-  const send = (channel: string, payload?: unknown): void => {
+  const send = (channel: EventChannel, payload?: unknown): void => {
     getWindow()?.webContents.send(channel, payload)
   }
 

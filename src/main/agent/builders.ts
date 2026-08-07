@@ -15,11 +15,11 @@ import crypto from 'node:crypto'
 import { CustomAgent } from '@shared/types'
 import { logger } from '../logger'
 import { resolveInWorkspace } from '../security'
-import { ApiMessage, streamCompletion } from './provider'
+import { runBoundedLoop } from './bounded-loop'
 import { profileFor } from './profiles'
 // Type-only import — tools.ts imports delegateBuildTool from here, so a runtime
 // value import would form an eval-time cycle. builderTools() is loaded lazily.
-import type { Tool, ToolContext, ToolResult } from './tools'
+import type { Tool, ToolResult } from './tools'
 
 const log = logger('builders')
 const BUILDER_MAX_TURNS = 25
@@ -119,61 +119,28 @@ async function runBuilder(task: string, cwd: string, persona: Persona, signal: A
   // Lazy to keep the tools.ts ↔ builders.ts cycle out of module-eval time.
   const { builderTools } = await import('./tools')
   const tools = builderTools()
-  const byName = new Map(tools.map((t) => [t.name, t]))
   const system =
     `You are a BUILDER implementing a task in your OWN isolated git worktree, drawing on the expertise of the "${persona.name}" role. ` +
     `You have full read/edit/command tools and run autonomously with no approvals; everything you do stays in this worktree until the orchestrator reviews and merges your diff. ` +
     `You are the implementer here, NOT an advisor: you MUST actually create and edit the real files to complete the task. Returning only a plan, outline, or description WITHOUT writing the files is a failure — write the code with write_file/apply_patch and verify it (build/tests where sensible). ` +
     `Read .conduit/PROJECT_BRIEF.md for context if it exists. Do NOT run git commit — the orchestrator merges your changes. When finished, reply with a short summary of what you changed.\n\n` +
     `Apply the ${persona.name}'s expertise and standards, but IGNORE any instruction in the role description below that says to only advise, plan, review, or avoid editing files — in this worktree you have full write access and must produce working files:\n${persona.instructions.trim()}\n\nYour private worktree: ${cwd}`
-  const messages: ApiMessage[] = [
-    { role: 'system', content: system },
-    { role: 'user', content: task }
-  ]
-  const ctx: ToolContext = { cwd, sessionId: 'builder', signal }
-
-  for (let turn = 0; turn < BUILDER_MAX_TURNS; turn++) {
-    if (signal.aborted) return '(builder cancelled)'
-    const result = await streamCompletion({
-      model: profile.apiModel,
-      messages,
-      tools: tools.map((t) => t.def),
-      maxOutputTokens: 8000,
-      temperature: profile.temperature,
-      signal
-    })
-    messages.push({
-      role: 'assistant',
-      content: result.content || null,
-      ...(result.toolCalls.length ? { tool_calls: result.toolCalls } : {})
-    })
-    if (!result.toolCalls.length) return result.content || '(no summary)'
+  const run = await runBoundedLoop({
+    system,
+    task,
+    tools,
     // Sequential — edits and commands are order-sensitive.
-    for (const call of result.toolCalls) {
-      if (signal.aborted) return '(builder cancelled)'
-      const tool = byName.get(call.function.name)
-      let output: string
-      if (!tool) output = `Unknown tool ${call.function.name}`
-      else {
-        let input: Record<string, unknown>
-        try {
-          input = JSON.parse(call.function.arguments || '{}')
-        } catch {
-          output = 'Invalid tool arguments.'
-          messages.push({ role: 'tool', tool_call_id: call.id, content: output })
-          continue
-        }
-        try {
-          const r = await tool.run(input, ctx)
-          output = r.output
-        } catch (err) {
-          output = err instanceof Error ? err.message : String(err)
-        }
-      }
-      messages.push({ role: 'tool', tool_call_id: call.id, content: output })
-    }
-  }
-  return '(builder hit its turn limit without finishing)'
+    concurrent: false,
+    ctx: { cwd, sessionId: 'builder', signal },
+    model: profile.apiModel,
+    temperature: profile.temperature,
+    maxOutputTokens: 8000,
+    maxTurns: BUILDER_MAX_TURNS,
+    signal
+  })
+  if (run.outcome === 'cancelled') return '(builder cancelled)'
+  if (run.outcome === 'turn-limit') return '(builder hit its turn limit without finishing)'
+  return run.content || '(no summary)'
 }
 
 export const delegateBuildTool: Tool = {

@@ -20,7 +20,16 @@ import {
   Settings,
   TeamState
 } from '@shared/types'
-import { ApiMessage, ApiToolCall, ProviderError, UserContentPart, streamCompletion } from './provider'
+import {
+  ApiMessage,
+  ApiToolCall,
+  CompletionResult,
+  ProviderError,
+  StreamFn,
+  StreamOptions,
+  UserContentPart,
+  streamCompletion
+} from './provider'
 import { COMPACTION_PROMPT, REVIEW_PROMPT, REVIEW_SCHEMA, estimateTokens, profileFor } from './profiles'
 import { logger } from '../logger'
 import { MemoryTarget, memoryStore } from './memory'
@@ -33,7 +42,7 @@ import { ApiToolDef } from './provider'
 import { Tool, ToolContext, ToolResult, TeamToolContext, toolByName } from './tools'
 import { SerialQueue, withAbort } from './async'
 import { SessionRecord, sessionStore } from '../sessions'
-import { bashAllowKey, resolveInWorkspace, writeAllowKey } from '../security'
+import { resolveInWorkspace, toolAllowKeys } from '../security'
 import { buildRepoMap } from '../repo-map'
 import { appendAudit } from '../audit'
 
@@ -77,7 +86,13 @@ export class AgentRun {
     private persistSettings: () => void = () => undefined,
     /** Ask the user a question mid-run (ask_user tool); resolves with their answer. */
     private askQuestion: (q: { question: string; options?: string[] }) => Promise<string> = async () =>
-      ''
+      '',
+    /**
+     * The model seam. Defaults to the xAI adapter; a test drives a whole turn
+     * by passing a scripted one, which is the only way to reach the tool
+     * dispatch and permission logic below without the network.
+     */
+    private stream: StreamFn = streamCompletion
   ) {}
 
   cancel(): void {
@@ -374,11 +389,9 @@ export class AgentRun {
    * One automatic retry on transient provider failures (5xx, network drops,
    * short rate limits) so a single blip doesn't kill a long agentic turn.
    */
-  private async streamWithRetry(
-    opts: Parameters<typeof streamCompletion>[0]
-  ): Promise<Awaited<ReturnType<typeof streamCompletion>>> {
+  private async streamWithRetry(opts: StreamOptions): Promise<CompletionResult> {
     try {
-      return await streamCompletion(opts)
+      return await this.stream(opts)
     } catch (err) {
       const retryable =
         err instanceof ProviderError &&
@@ -398,7 +411,7 @@ export class AgentRun {
       })
       await new Promise((res) => setTimeout(res, waitMs))
       if (this.cancelled || this.abort.signal.aborted) throw err
-      return await streamCompletion(opts)
+      return await this.stream(opts)
     }
   }
 
@@ -425,7 +438,7 @@ export class AgentRun {
     const reviewProfile = this.settings.multiModelRouting
       ? profileFor('grok-4.3')
       : profileFor(this.session.meta.model)
-    const result = await streamCompletion({
+    const result = await this.stream({
       model: reviewProfile.apiModel,
       // Distillation doesn't need deep reasoning — keep background calls cheap.
       reasoningEffort: reviewProfile.supportsReasoningEffort ? 'low' : undefined,
@@ -501,10 +514,13 @@ export class AgentRun {
       return { call, input, parseError, tool: this.runTools.get(call.function.name) }
     })
 
-    // Read-only tools run concurrently; mutating tools and commands run
-    // sequentially, in order, each gated by permissions.
-    const readers = parsed.filter((p) => p.tool?.kind === 'read' && !p.parseError)
-    const rest = parsed.filter((p) => !(p.tool?.kind === 'read' && !p.parseError))
+    // Batchable tools run concurrently; everything else runs sequentially, in
+    // order, each gated by permissions. A tool opts out of batching via
+    // `concurrent: false` even when it touches no files (see Tool.concurrent).
+    const batchable = (p: (typeof parsed)[number]): boolean =>
+      !!p.tool && (p.tool.concurrent ?? p.tool.kind === 'read') && !p.parseError
+    const readers = parsed.filter(batchable)
+    const rest = parsed.filter((p) => !batchable(p))
 
     const results = new Map<string, ToolResult>()
     await Promise.all(
@@ -586,6 +602,8 @@ export class AgentRun {
       callId: call.id,
       name: tool.name,
       input,
+      summary: tool.summarize(input),
+      targets: tool.targets?.(input),
       preview,
       status: 'running'
     }
@@ -618,22 +636,9 @@ export class AgentRun {
       result = { ok: false, output: err instanceof Error ? err.message : String(err) }
     }
     if (!result.ok) recordFailure('error', tool.name, result.output)
-    // Track file mutations for the turn review panel.
-    if (result.ok && tool.name === 'write_file') {
-      const p = String(input.path ?? '')
-      if (p) {
-        this.session.lastTurnChanges = this.session.lastTurnChanges ?? []
-        this.session.lastTurnChanges.push({ path: p, kind: 'write' })
-      }
-    } else if (result.ok && tool.name === 'apply_patch') {
-      // A patch can touch several files; pull each from its header.
-      const re = /^\*\*\* (Add|Update|Delete) File: (.+)$/gm
-      let m: RegExpExecArray | null
-      while ((m = re.exec(String(input.patch ?? '')))) {
-        this.session.lastTurnChanges = this.session.lastTurnChanges ?? []
-        this.session.lastTurnChanges.push({ path: m[2].trim(), kind: m[1] === 'Add' ? 'write' : 'edit' })
-      }
-    }
+    // File mutations reach the Review panel through ctx.onFileWritten, reported
+    // by the tool that did the writing — this loop no longer re-parses tool
+    // arguments to guess what changed.
     // Test-after-edit: append a verification hint so the model runs checks.
     if (
       result.ok &&
@@ -691,22 +696,12 @@ export class AgentRun {
       if (mode === 'auto-edit' && tool.kind === 'write') return true
     }
 
-    // Path-scoped write keys; bash keys only for simple (non-compound) commands.
-    let allowKey: string | null = tool.name
-    if (tool.name === 'bash') {
-      allowKey = bashAllowKey(String(input.command ?? ''))
-    } else if (tool.kind === 'write' && typeof input.path === 'string') {
-      try {
-        const abs = resolveInWorkspace(this.session.meta.cwd, input.path)
-        allowKey = writeAllowKey(tool.name, abs, this.session.meta.cwd)
-      } catch {
-        allowKey = null // outside workspace — always re-prompt (and tool will fail)
-      }
-    }
+    const allowKeys = toolAllowKeys(tool, input, this.session.meta.cwd)
     // MCP tools keep full namespaced name as the allow key. A team commit is
     // never satisfied by a prior "always allow bash:git" — it always confirms.
-    if (!teamCommit && allowKey && this.session.allowlist.includes(allowKey)) return true
-    if (!teamCommit && allowKey && this.settings.globalAllowlist.includes(allowKey)) return true
+    const remembered = (k: string): boolean =>
+      this.session.allowlist.includes(k) || this.settings.globalAllowlist.includes(k)
+    if (!teamCommit && allowKeys && allowKeys.every(remembered)) return true
 
     const request: PermissionRequest = {
       requestId: id(),
@@ -715,23 +710,25 @@ export class AgentRun {
       summary: tool.summarize(input),
       input,
       preview,
-      priorApprovals: allowKey ? approvalCount(allowKey) : 0
+      // The weakest key sets the count — approving `a.ts` ten times says
+      // nothing about a patch that also touches `b.ts`.
+      priorApprovals: allowKeys?.length ? Math.min(...allowKeys.map(approvalCount)) : 0
     }
     const { allow, alwaysAllow, globalAllow } = await this.askPermission(request)
     if (this.settings.auditLogEnabled) {
       appendAudit('permission', `${allow ? 'allow' : 'deny'} ${tool.name}: ${tool.summarize(input)}`, {
         sessionId: this.session.meta.id,
-        detail: allowKey ?? undefined
+        detail: allowKeys?.join(', ') || undefined
       })
     }
     if (allow) {
-      if (allowKey) {
-        bumpApproval(allowKey)
-        if (globalAllow && !this.settings.globalAllowlist.includes(allowKey)) {
-          this.settings.globalAllowlist.push(allowKey)
+      for (const key of allowKeys ?? []) {
+        bumpApproval(key)
+        if (globalAllow && !this.settings.globalAllowlist.includes(key)) {
+          this.settings.globalAllowlist.push(key)
           this.persistSettings()
-        } else if (alwaysAllow && !this.session.allowlist.includes(allowKey)) {
-          this.session.allowlist.push(allowKey)
+        } else if (alwaysAllow && !this.session.allowlist.includes(key)) {
+          this.session.allowlist.push(key)
         }
       }
     } else {
@@ -843,7 +840,7 @@ export class AgentRun {
     const kept = this.session.apiMessages.slice(cut)
 
     const compactProfile = this.settings.multiModelRouting ? profileFor('grok-4.3') : profile
-    const summaryResult = await streamCompletion({
+    const summaryResult = await this.stream({
       model: compactProfile.apiModel,
       messages: [
         { role: 'system', content: COMPACTION_PROMPT },
@@ -897,7 +894,7 @@ export class AgentRun {
       const titleProfile = this.settings.multiModelRouting
         ? profileFor('grok-4.3')
         : profileFor(this.session.meta.model)
-      const result = await streamCompletion({
+      const result = await this.stream({
         model: titleProfile.apiModel,
         reasoningEffort: titleProfile.supportsReasoningEffort ? 'low' : undefined,
         messages: [

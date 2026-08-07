@@ -10,12 +10,17 @@ import {
   assertPublicUrl,
   bashAllowKey,
   writeAllowKey,
+  toolAllowKeys,
   isValidId,
   isValidJobId,
   assertId,
-  applySettingsPatch
+  applySettingsPatch,
+  redactMcpEnv,
+  restoreMcpEnv,
+  MCP_ENV_MASK
 } from '../src/main/security'
 import { DEFAULT_SETTINGS } from '@shared/types'
+import type { McpServerConfig } from '@shared/types'
 
 describe('resolveInWorkspace (path traversal guard)', () => {
   let root: string
@@ -227,5 +232,198 @@ describe('applySettingsPatch — customAgents', () => {
 
     const many = Array.from({ length: 50 }, (_, i) => ({ id: `a${i}`, name: `n${i}` }))
     expect(applySettingsPatch(DEFAULT_SETTINGS, { customAgents: many }).customAgents).toHaveLength(40)
+  })
+})
+
+describe('toolAllowKeys (permission scoping)', () => {
+  let root: string
+  beforeAll(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'allowkey-test-'))
+  })
+  afterAll(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  const writeFile = {
+    name: 'write_file',
+    kind: 'write',
+    targets: (i: Record<string, unknown>) => {
+      const p = String(i.path ?? '')
+      return p ? [p] : undefined
+    }
+  }
+  // Mirrors apply_patch: names its files, and names none when unparseable.
+  const applyPatch = {
+    name: 'apply_patch',
+    kind: 'write',
+    targets: (i: Record<string, unknown>) => (i.files as string[] | undefined) ?? undefined
+  }
+  // Mirrors lsp_edit: a write tool that cannot say what it will touch.
+  const lspEdit = { name: 'lsp_edit', kind: 'write' }
+
+  it('scopes a write tool per file it names', () => {
+    expect(toolAllowKeys(writeFile, { path: 'src/a.ts' }, root)).toEqual(['write_file:@src/a.ts'])
+  })
+
+  it('gives a multi-file patch one key per file, so approving one never covers the others', () => {
+    const keys = toolAllowKeys(applyPatch, { files: ['src/a.ts', 'src/b.ts'] }, root)
+    expect(keys).toEqual(['apply_patch:@src/a.ts', 'apply_patch:@src/b.ts'])
+    // The regression this guards: a bare `apply_patch` key would satisfy every
+    // future patch to every file in the workspace.
+    expect(keys).not.toContain('apply_patch')
+  })
+
+  it('refuses a key when a write tool cannot name its targets', () => {
+    expect(toolAllowKeys(lspEdit, { path: 'src/a.ts' }, root)).toBeNull()
+    expect(toolAllowKeys(applyPatch, { files: undefined }, root)).toBeNull()
+    expect(toolAllowKeys(writeFile, {}, root)).toBeNull()
+  })
+
+  it('refuses a key for a target outside the workspace', () => {
+    expect(toolAllowKeys(writeFile, { path: '../escape.ts' }, root)).toBeNull()
+    expect(toolAllowKeys(applyPatch, { files: ['src/ok.ts', '../escape.ts'] }, root)).toBeNull()
+  })
+
+  it('keys bash by command name, and refuses compound commands', () => {
+    expect(toolAllowKeys({ name: 'bash', kind: 'command' }, { command: 'npm test' }, root)).toEqual([
+      'bash:npm'
+    ])
+    expect(
+      toolAllowKeys({ name: 'bash', kind: 'command' }, { command: 'npm test && rm -rf /' }, root)
+    ).toBeNull()
+  })
+
+  it('keys a non-write tool by name', () => {
+    expect(toolAllowKeys({ name: 'mcp__srv__thing', kind: 'read' }, {}, root)).toEqual([
+      'mcp__srv__thing'
+    ])
+  })
+})
+
+describe('MCP env redact/restore round-trip', () => {
+  const server = (name: string, env?: Record<string, string>): McpServerConfig =>
+    ({ name, command: 'node', args: [], enabled: true, env }) as McpServerConfig
+
+  it('masks every set value and leaves empty ones empty', () => {
+    const out = redactMcpEnv([server('s', { TOKEN: 'secret', BLANK: '' })])
+    expect(out[0].env).toEqual({ TOKEN: MCP_ENV_MASK, BLANK: '' })
+  })
+
+  it('never leaks a real value to the renderer', () => {
+    const out = redactMcpEnv([server('s', { TOKEN: 'hunter2' })])
+    expect(JSON.stringify(out)).not.toContain('hunter2')
+  })
+
+  it('restores the stored value when the renderer echoes the mask', () => {
+    const current = [server('s', { TOKEN: 'hunter2' })]
+    const echoed = redactMcpEnv(current)
+    expect(restoreMcpEnv(echoed, current)[0].env).toEqual({ TOKEN: 'hunter2' })
+  })
+
+  it('accepts a genuine edit', () => {
+    const current = [server('s', { TOKEN: 'old' })]
+    const edited = [server('s', { TOKEN: 'new' })]
+    expect(restoreMcpEnv(edited, current)[0].env).toEqual({ TOKEN: 'new' })
+  })
+
+  it('keeps a stored secret the renderer omitted or blanked', () => {
+    const current = [server('s', { KEEP: 'v1', ALSO: 'v2' })]
+    // A form that only knew about one key must not wipe the other.
+    expect(restoreMcpEnv([server('s', { KEEP: MCP_ENV_MASK })], current)[0].env).toEqual({
+      KEEP: 'v1',
+      ALSO: 'v2'
+    })
+    expect(restoreMcpEnv([server('s', { KEEP: '' })], current)[0].env).toEqual({
+      KEEP: 'v1',
+      ALSO: 'v2'
+    })
+  })
+
+  it('passes through a server with no stored env, and an unknown server', () => {
+    expect(restoreMcpEnv([server('s', { A: 'x' })], [])[0].env).toEqual({ A: 'x' })
+    expect(restoreMcpEnv([server('new', { A: 'x' })], [server('old', { B: 'y' })])[0].env).toEqual({
+      A: 'x'
+    })
+  })
+
+  it('survives repeated round-trips without degrading the secret', () => {
+    let current = [server('s', { TOKEN: 'hunter2' })]
+    for (let i = 0; i < 5; i++) current = restoreMcpEnv(redactMcpEnv(current), current)
+    expect(current[0].env).toEqual({ TOKEN: 'hunter2' })
+  })
+})
+
+describe('applySettingsPatch — completeness', () => {
+  /**
+   * The drift guard: a setting can be added to the Settings type and to
+   * DEFAULT_SETTINGS, typecheck cleanly, ship — and silently never persist
+   * because nothing here accepts it. This asserts every declared setting is
+   * actually reachable through the patcher.
+   */
+  it('accepts a new value for every key in DEFAULT_SETTINGS', () => {
+    const unreachable: string[] = []
+    for (const [key, fallback] of Object.entries(DEFAULT_SETTINGS)) {
+      // A value that is valid for the key's type but differs from the default.
+      let candidate: unknown
+      if (typeof fallback === 'boolean') candidate = !fallback
+      else if (Array.isArray(fallback)) continue // shapes covered by their own tests
+      else if (key === 'defaultModel') candidate = 'grok-4.3'
+      else if (key === 'permissionMode') candidate = 'full-auto'
+      else if (key === 'theme') candidate = 'light'
+      else if (key === 'agentProfile') candidate = 'careful'
+      else if (key === 'updateChannel') candidate = 'beta'
+      else if (typeof fallback === 'string') candidate = 'changed'
+      else continue
+
+      const out = applySettingsPatch(DEFAULT_SETTINGS, { [key]: candidate }) as Record<
+        string,
+        unknown
+      >
+      if (out[key] !== candidate) unreachable.push(key)
+    }
+    expect(unreachable).toEqual([])
+  })
+
+  it('rejects a wrong-typed value for every boolean setting', () => {
+    const boolKeys = Object.entries(DEFAULT_SETTINGS)
+      .filter(([, v]) => typeof v === 'boolean')
+      .map(([k]) => k)
+    expect(boolKeys.length).toBeGreaterThan(5) // sanity: the loop is actually testing something
+
+    for (const key of boolKeys) {
+      for (const bad of ['true', 1, null, {}]) {
+        const out = applySettingsPatch(DEFAULT_SETTINGS, { [key]: bad }) as Record<string, unknown>
+        expect(out[key]).toBe((DEFAULT_SETTINGS as Record<string, unknown>)[key])
+      }
+    }
+  })
+
+  it('drops unknown keys entirely', () => {
+    const out = applySettingsPatch(DEFAULT_SETTINGS, { notASetting: true }) as Record<string, unknown>
+    expect(out.notASetting).toBeUndefined()
+  })
+
+  it('ignores a non-object patch', () => {
+    expect(applySettingsPatch(DEFAULT_SETTINGS, null)).toBe(DEFAULT_SETTINGS)
+    expect(applySettingsPatch(DEFAULT_SETTINGS, [1, 2])).toBe(DEFAULT_SETTINGS)
+    expect(applySettingsPatch(DEFAULT_SETTINGS, 'nope')).toBe(DEFAULT_SETTINGS)
+  })
+
+  it('rejects an invalid enum value and keeps the current one', () => {
+    const out = applySettingsPatch(DEFAULT_SETTINGS, {
+      defaultModel: 'not-a-model',
+      theme: 'neon',
+      updateChannel: 'nightly'
+    })
+    expect(out.defaultModel).toBe(DEFAULT_SETTINGS.defaultModel)
+    expect(out.theme).toBe(DEFAULT_SETTINGS.theme)
+    expect(out.updateChannel).toBe(DEFAULT_SETTINGS.updateChannel)
+  })
+
+  it('caps long free-text settings', () => {
+    const out = applySettingsPatch(DEFAULT_SETTINGS, {
+      customInstructions: 'x'.repeat(50_000),
+      testCommand: 'y'.repeat(2000)
+    })
+    expect(out.customInstructions).toHaveLength(20_000)
+    expect(out.testCommand).toHaveLength(500)
   })
 })

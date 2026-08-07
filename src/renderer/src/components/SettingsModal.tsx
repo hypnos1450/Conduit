@@ -18,6 +18,48 @@ import {
 import { TEAM_TEMPLATES, TeamTemplate } from '@shared/team-templates'
 import { CheckIcon, XIcon } from './Icons'
 
+/**
+ * An on/off setting row. Every boolean setting renders through this, so the
+ * label, help text and key are all a row states — there is no per-setting
+ * markup to copy, and therefore none to get subtly wrong.
+ */
+function BoolRow(props: {
+  label: string
+  help: React.ReactNode
+  value: boolean
+  onChange: (next: boolean) => void
+}): JSX.Element {
+  return (
+    <div className="setting-row">
+      <div>
+        <div className="setting-label">{props.label}</div>
+        <div className="setting-help">{props.help}</div>
+      </div>
+      <select
+        value={props.value ? 'on' : 'off'}
+        onChange={(e) => props.onChange(e.target.value === 'on')}
+      >
+        <option value="on">on</option>
+        <option value="off">off</option>
+      </select>
+    </div>
+  )
+}
+
+/**
+ * `KEY=value` lines parsed into an env map, for the MCP server env textareas.
+ * Blank lines and anything that isn't a valid env key are ignored, so a
+ * half-typed line never becomes a junk variable.
+ */
+export function parseEnvText(text: string): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const line of text.split('\n')) {
+    const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line)
+    if (m) env[m[1]] = m[2]
+  }
+  return env
+}
+
 const TABS = ['General', 'Agent', 'Agents', 'Teams', 'Memory', 'Skills', 'MCP', 'Security', 'About'] as const
 
 const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
@@ -446,11 +488,7 @@ function McpSection(props: {
     const name = draft.name.trim()
     const command = draft.command.trim()
     if (!name || !command) return
-    const env: Record<string, string> = {}
-    for (const line of draft.env.split('\n')) {
-      const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line)
-      if (m) env[m[1]] = m[2]
-    }
+    const env = parseEnvText(draft.env)
     const server: McpServerConfig = {
       name,
       command,
@@ -512,11 +550,7 @@ function McpSection(props: {
   }
 
   const saveEnvFor = async (name: string): Promise<void> => {
-    const env: Record<string, string> = {}
-    for (const line of editEnvText.split('\n')) {
-      const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line)
-      if (m) env[m[1]] = m[2]
-    }
+    const env = parseEnvText(editEnvText)
     await save(
       props.settings.mcpServers.map((s) =>
         s.name === name ? { ...s, env: Object.keys(env).length ? env : undefined } : s
@@ -1160,7 +1194,7 @@ function AgentsSection(props: {
 }
 
 /** Build the custom agents + team a template describes (renderer-side). */
-function instantiateTemplate(
+export function instantiateTemplate(
   tmpl: TeamTemplate,
   existing: Settings
 ): { customAgents: CustomAgent[]; teams: AgentTeam[] } {
@@ -1427,22 +1461,12 @@ export default function SettingsModal(props: {
                 </select>
               </div>
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-label">Notifications</div>
-                  <div className="setting-help">
-                    System notification when a task finishes or needs approval while the app is in
-                    the background
-                  </div>
-                </div>
-                <select
-                  value={props.settings.notifications ? 'on' : 'off'}
-                  onChange={(e) => void update({ notifications: e.target.value === 'on' })}
-                >
-                  <option value="on">on</option>
-                  <option value="off">off</option>
-                </select>
-              </div>
+              <BoolRow
+                label="Notifications"
+                help={<>System notification when a task finishes or needs approval while the app is in the background</>}
+                value={props.settings.notifications}
+                onChange={(v) => void update({ notifications: v })}
+              />
 
               <div className="setting-row">
                 <div>
@@ -1518,37 +1542,19 @@ export default function SettingsModal(props: {
                 </select>
               </div>
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-label">Web search</div>
-                  <div className="setting-help">
-                    Let Grok use xAI&apos;s built-in web and X search (runs on xAI servers)
-                  </div>
-                </div>
-                <select
-                  value={props.settings.enableWebSearch ? 'on' : 'off'}
-                  onChange={(e) => void update({ enableWebSearch: e.target.value === 'on' })}
-                >
-                  <option value="on">on</option>
-                  <option value="off">off</option>
-                </select>
-              </div>
+              <BoolRow
+                label="Web search"
+                help={<>Let Grok use xAI&apos;s built-in web and X search (runs on xAI servers)</>}
+                value={props.settings.enableWebSearch}
+                onChange={(v) => void update({ enableWebSearch: v })}
+              />
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-label">Test after edit</div>
-                  <div className="setting-help">
-                    After write/edit tools, remind the agent to run checks
-                  </div>
-                </div>
-                <select
-                  value={props.settings.testAfterEdit ? 'on' : 'off'}
-                  onChange={(e) => void update({ testAfterEdit: e.target.value === 'on' })}
-                >
-                  <option value="on">on</option>
-                  <option value="off">off</option>
-                </select>
-              </div>
+              <BoolRow
+                label="Test after edit"
+                help={<>After write/edit tools, remind the agent to run checks</>}
+                value={props.settings.testAfterEdit}
+                onChange={(v) => void update({ testAfterEdit: v })}
+              />
 
               <div className="setting-row" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
                 <div style={{ marginBottom: 6 }}>
@@ -1563,35 +1569,19 @@ export default function SettingsModal(props: {
                 />
               </div>
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-label">Multi-model routing</div>
-                  <div className="setting-help">
-                    Use a lighter model for titles, compaction, and background review
-                  </div>
-                </div>
-                <select
-                  value={props.settings.multiModelRouting ? 'on' : 'off'}
-                  onChange={(e) => void update({ multiModelRouting: e.target.value === 'on' })}
-                >
-                  <option value="on">on</option>
-                  <option value="off">off</option>
-                </select>
-              </div>
+              <BoolRow
+                label="Multi-model routing"
+                help={<>Use a lighter model for titles, compaction, and background review</>}
+                value={props.settings.multiModelRouting}
+                onChange={(v) => void update({ multiModelRouting: v })}
+              />
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-label">Repository map</div>
-                  <div className="setting-help">Inject a frozen top-level file map into the system prompt</div>
-                </div>
-                <select
-                  value={props.settings.repoMapEnabled ? 'on' : 'off'}
-                  onChange={(e) => void update({ repoMapEnabled: e.target.value === 'on' })}
-                >
-                  <option value="on">on</option>
-                  <option value="off">off</option>
-                </select>
-              </div>
+              <BoolRow
+                label="Repository map"
+                help={<>Inject a frozen top-level file map into the system prompt</>}
+                value={props.settings.repoMapEnabled}
+                onChange={(v) => void update({ repoMapEnabled: v })}
+              />
 
               <div className="setting-row">
                 <div>
@@ -1606,58 +1596,30 @@ export default function SettingsModal(props: {
                 </button>
               </div>
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-label">Parallel subagents</div>
-                  <div className="setting-help">
-                    Let Grok spawn read-only investigation subagents that run in parallel
-                  </div>
-                </div>
-                <select
-                  value={props.settings.enableSubagents ? 'on' : 'off'}
-                  onChange={(e) => void update({ enableSubagents: e.target.value === 'on' })}
-                >
-                  <option value="on">on</option>
-                  <option value="off">off</option>
-                </select>
-              </div>
+              <BoolRow
+                label="Parallel subagents"
+                help={<>Let Grok spawn read-only investigation subagents that run in parallel</>}
+                value={props.settings.enableSubagents}
+                onChange={(v) => void update({ enableSubagents: v })}
+              />
             </>
           )}
 
           {tab === 'Memory' && (
             <>
-              <div className="setting-row">
-                <div>
-                  <div className="setting-label">Memory</div>
-                  <div className="setting-help">
-                    Grok keeps bounded notes about you and your environment across sessions
-                  </div>
-                </div>
-                <select
-                  value={props.settings.memoryEnabled ? 'on' : 'off'}
-                  onChange={(e) => void update({ memoryEnabled: e.target.value === 'on' })}
-                >
-                  <option value="on">on</option>
-                  <option value="off">off</option>
-                </select>
-              </div>
+              <BoolRow
+                label="Memory"
+                help={<>Grok keeps bounded notes about you and your environment across sessions</>}
+                value={props.settings.memoryEnabled}
+                onChange={(v) => void update({ memoryEnabled: v })}
+              />
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-label">Memory write approval</div>
-                  <div className="setting-help">
-                    Require your approval before memories are saved (foreground writes prompt
-                    inline, background review writes are staged below)
-                  </div>
-                </div>
-                <select
-                  value={props.settings.memoryWriteApproval ? 'on' : 'off'}
-                  onChange={(e) => void update({ memoryWriteApproval: e.target.value === 'on' })}
-                >
-                  <option value="off">off</option>
-                  <option value="on">on</option>
-                </select>
-              </div>
+              <BoolRow
+                label="Memory write approval"
+                help={<>Require your approval before memories are saved (foreground writes prompt inline, background review writes are staged below)</>}
+                value={props.settings.memoryWriteApproval}
+                onChange={(v) => void update({ memoryWriteApproval: v })}
+              />
 
               <div className="setting-row" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
                 <div style={{ marginBottom: 6 }}>
@@ -1706,22 +1668,12 @@ export default function SettingsModal(props: {
                   from Home.
                 </div>
               </div>
-              <div className="setting-row">
-                <div>
-                  <div className="setting-label">Write-capable builders (Model B)</div>
-                  <div className="setting-help">
-                    Let a team orchestrator delegate implementation to builder roles that write code
-                    autonomously in isolated git worktrees, merged back for review. Needs a git repo.
-                  </div>
-                </div>
-                <select
-                  value={props.settings.enableTeamBuilders ? 'on' : 'off'}
-                  onChange={(e) => void update({ enableTeamBuilders: e.target.value === 'on' })}
-                >
-                  <option value="on">on</option>
-                  <option value="off">off</option>
-                </select>
-              </div>
+              <BoolRow
+                label="Write-capable builders (Model B)"
+                help={<>Let a team orchestrator delegate implementation to builder roles that write code autonomously in isolated git worktrees, merged back for review. Needs a git repo.</>}
+                value={props.settings.enableTeamBuilders}
+                onChange={(v) => void update({ enableTeamBuilders: v })}
+              />
               <TeamsSection settings={props.settings} update={update} />
             </div>
           )}
@@ -1798,21 +1750,12 @@ export default function SettingsModal(props: {
 
           {tab === 'Security' && (
             <>
-              <div className="setting-row">
-                <div>
-                  <div className="setting-label">Require workspace trust</div>
-                  <div className="setting-help">
-                    Agent tools blocked until you trust the folder (VS Code-style)
-                  </div>
-                </div>
-                <select
-                  value={props.settings.requireWorkspaceTrust ? 'on' : 'off'}
-                  onChange={(e) => void update({ requireWorkspaceTrust: e.target.value === 'on' })}
-                >
-                  <option value="on">on</option>
-                  <option value="off">off</option>
-                </select>
-              </div>
+              <BoolRow
+                label="Require workspace trust"
+                help={<>Agent tools blocked until you trust the folder (VS Code-style)</>}
+                value={props.settings.requireWorkspaceTrust}
+                onChange={(v) => void update({ requireWorkspaceTrust: v })}
+              />
               <div className="setting-row">
                 <div>
                   <div className="setting-label">Trusted workspaces</div>
@@ -1838,19 +1781,12 @@ export default function SettingsModal(props: {
                   </button>
                 )}
               </div>
-              <div className="setting-row">
-                <div>
-                  <div className="setting-label">Audit log</div>
-                  <div className="setting-help">Record permissions, tools, MCP, and trust changes</div>
-                </div>
-                <select
-                  value={props.settings.auditLogEnabled ? 'on' : 'off'}
-                  onChange={(e) => void update({ auditLogEnabled: e.target.value === 'on' })}
-                >
-                  <option value="on">on</option>
-                  <option value="off">off</option>
-                </select>
-              </div>
+              <BoolRow
+                label="Audit log"
+                help={<>Record permissions, tools, MCP, and trust changes</>}
+                value={props.settings.auditLogEnabled}
+                onChange={(v) => void update({ auditLogEnabled: v })}
+              />
               <div className="setting-row">
                 <div>
                   <div className="setting-label">Allowlist</div>
@@ -1931,19 +1867,12 @@ export default function SettingsModal(props: {
                 </span>
               </div>
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-label">Reduced motion</div>
-                  <div className="setting-help">Minimize animations for accessibility</div>
-                </div>
-                <select
-                  value={props.settings.reducedMotion ? 'on' : 'off'}
-                  onChange={(e) => void update({ reducedMotion: e.target.value === 'on' })}
-                >
-                  <option value="on">on</option>
-                  <option value="off">off</option>
-                </select>
-              </div>
+              <BoolRow
+                label="Reduced motion"
+                help={<>Minimize animations for accessibility</>}
+                value={props.settings.reducedMotion}
+                onChange={(v) => void update({ reducedMotion: v })}
+              />
 
               <div className="setting-row">
                 <div>

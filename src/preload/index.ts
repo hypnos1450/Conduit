@@ -10,45 +10,60 @@ import type {
   UpdateChannel,
   UpdateInfo
 } from '@shared/types'
+import type { Channel, EventChannel, MenuMessage } from '@shared/channels'
+
+// Every bridge method goes through these two, so the channel name is checked
+// against the shared list at build time rather than failing at runtime with
+// "no handler registered".
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const invoke = (channel: Channel, ...args: unknown[]): Promise<any> =>
+  ipcRenderer.invoke(channel, ...args)
+
+/** Subscribe to a push channel; returns the unsubscribe. */
+function subscribe<T>(channel: EventChannel, cb: (payload: T) => void): () => void {
+  const listener = (_e: Electron.IpcRendererEvent, payload: T): void => cb(payload)
+  ipcRenderer.on(channel, listener)
+  return () => ipcRenderer.removeListener(channel, listener)
+}
 
 const api: HarnessApi = {
   auth: {
-    getState: () => ipcRenderer.invoke('auth:getState'),
-    loginOAuth: () => ipcRenderer.invoke('auth:loginOAuth'),
-    setApiKey: (key: string) => ipcRenderer.invoke('auth:setApiKey', key),
-    logout: () => ipcRenderer.invoke('auth:logout'),
-    probe: () => ipcRenderer.invoke('auth:probe')
+    getState: () => invoke('auth:getState'),
+    loginOAuth: () => invoke('auth:loginOAuth'),
+    setApiKey: (key: string) => invoke('auth:setApiKey', key),
+    logout: () => invoke('auth:logout'),
+    probe: () => invoke('auth:probe')
   },
   sessions: {
-    list: () => ipcRenderer.invoke('sessions:list'),
-    create: (opts) => ipcRenderer.invoke('sessions:create', opts),
-    createTeam: (teamId, cwd) => ipcRenderer.invoke('sessions:createTeam', teamId, cwd),
-    load: (id) => ipcRenderer.invoke('sessions:load', id),
-    delete: (id) => ipcRenderer.invoke('sessions:delete', id),
-    rename: (id, title) => ipcRenderer.invoke('sessions:rename', id, title),
-    setModel: (id, model: ModelId) => ipcRenderer.invoke('sessions:setModel', id, model),
-    setAgent: (id, agentId) => ipcRenderer.invoke('sessions:setAgent', id, agentId),
-    setEffort: (id, effort) => ipcRenderer.invoke('sessions:setEffort', id, effort),
+    list: () => invoke('sessions:list'),
+    create: (opts) => invoke('sessions:create', opts),
+    createTeam: (teamId, cwd) => invoke('sessions:createTeam', teamId, cwd),
+    load: (id) => invoke('sessions:load', id),
+    delete: (id) => invoke('sessions:delete', id),
+    rename: (id, title) => invoke('sessions:rename', id, title),
+    setModel: (id, model: ModelId) => invoke('sessions:setModel', id, model),
+    setAgent: (id, agentId) => invoke('sessions:setAgent', id, agentId),
+    setEffort: (id, effort) => invoke('sessions:setEffort', id, effort),
     restoreCheckpoint: (sessionId, itemId) =>
-      ipcRenderer.invoke('sessions:restoreCheckpoint', sessionId, itemId),
-    fork: (sessionId, itemId) => ipcRenderer.invoke('sessions:fork', sessionId, itemId),
-    export: (sessionId) => ipcRenderer.invoke('sessions:export', sessionId),
-    gitStatus: (sessionId) => ipcRenderer.invoke('sessions:gitStatus', sessionId),
-    search: (query, limit) => ipcRenderer.invoke('sessions:search', query, limit),
-    setPlanOnly: (id, planOnly) => ipcRenderer.invoke('sessions:setPlanOnly', id, planOnly),
-    turnChanges: (sessionId) => ipcRenderer.invoke('sessions:turnChanges', sessionId)
+      invoke('sessions:restoreCheckpoint', sessionId, itemId),
+    fork: (sessionId, itemId) => invoke('sessions:fork', sessionId, itemId),
+    export: (sessionId) => invoke('sessions:export', sessionId),
+    gitStatus: (sessionId) => invoke('sessions:gitStatus', sessionId),
+    search: (query, limit) => invoke('sessions:search', query, limit),
+    setPlanOnly: (id, planOnly) => invoke('sessions:setPlanOnly', id, planOnly),
+    turnChanges: (sessionId) => invoke('sessions:turnChanges', sessionId)
   },
   agent: {
     send: (sessionId, text, attachments?: Attachments) =>
-      ipcRenderer.invoke('agent:send', sessionId, text, attachments),
-    cancel: (sessionId) => ipcRenderer.invoke('agent:cancel', sessionId),
-    queue: (sessionId, text) => ipcRenderer.invoke('agent:queue', sessionId, text),
-    retry: (sessionId) => ipcRenderer.invoke('agent:retry', sessionId),
+      invoke('agent:send', sessionId, text, attachments),
+    cancel: (sessionId) => invoke('agent:cancel', sessionId),
+    queue: (sessionId, text) => invoke('agent:queue', sessionId, text),
+    retry: (sessionId) => invoke('agent:retry', sessionId),
     editResend: (sessionId, itemId, text) =>
-      ipcRenderer.invoke('agent:editResend', sessionId, itemId, text),
-    isRunning: (sessionId) => ipcRenderer.invoke('agent:isRunning', sessionId),
+      invoke('agent:editResend', sessionId, itemId, text),
+    isRunning: (sessionId) => invoke('agent:isRunning', sessionId),
     respondPermission: (requestId, allow, alwaysAllow, globalAllow, sessionId) =>
-      ipcRenderer.invoke(
+      invoke(
         'agent:respondPermission',
         requestId,
         allow,
@@ -57,139 +72,119 @@ const api: HarnessApi = {
         sessionId
       ),
     respondQuestion: (requestId, answer, sessionId) =>
-      ipcRenderer.invoke('agent:respondQuestion', requestId, answer, sessionId),
-    onEvent: (cb: (ev: AgentEvent) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, ev: AgentEvent): void => cb(ev)
-      ipcRenderer.on('agent:event', listener)
-      return () => ipcRenderer.removeListener('agent:event', listener)
-    }
+      invoke('agent:respondQuestion', requestId, answer, sessionId),
+    onEvent: (cb: (ev: AgentEvent) => void) => subscribe('agent:event', cb)
   },
   memory: {
-    entries: (cwd?: string) => ipcRenderer.invoke('memory:entries', cwd),
+    entries: (cwd?: string) => invoke('memory:entries', cwd),
     removeEntry: (target, text, cwd?: string) =>
-      ipcRenderer.invoke('memory:removeEntry', target, text, cwd),
-    pending: () => ipcRenderer.invoke('memory:pending'),
-    resolvePending: (id, approve) => ipcRenderer.invoke('memory:resolvePending', id, approve)
+      invoke('memory:removeEntry', target, text, cwd),
+    pending: () => invoke('memory:pending'),
+    resolvePending: (id, approve) => invoke('memory:resolvePending', id, approve)
   },
   skills: {
-    list: () => ipcRenderer.invoke('skills:list'),
-    get: (name: string) => ipcRenderer.invoke('skills:get', name),
-    remove: (name: string) => ipcRenderer.invoke('skills:remove', name),
-    pending: () => ipcRenderer.invoke('skills:pending'),
-    resolvePending: (id, approve) => ipcRenderer.invoke('skills:resolvePending', id, approve),
-    installGithub: (url: string) => ipcRenderer.invoke('skills:installGithub', url),
-    importFolder: () => ipcRenderer.invoke('skills:importFolder'),
-    reveal: (name: string) => ipcRenderer.invoke('skills:reveal', name),
+    list: () => invoke('skills:list'),
+    get: (name: string) => invoke('skills:get', name),
+    remove: (name: string) => invoke('skills:remove', name),
+    pending: () => invoke('skills:pending'),
+    resolvePending: (id, approve) => invoke('skills:resolvePending', id, approve),
+    installGithub: (url: string) => invoke('skills:installGithub', url),
+    importFolder: () => invoke('skills:importFolder'),
+    reveal: (name: string) => invoke('skills:reveal', name),
     setCategory: (name: string, category: string) =>
-      ipcRenderer.invoke('skills:setCategory', name, category)
+      invoke('skills:setCategory', name, category)
   },
   files: {
-    suggest: (sessionId, query) => ipcRenderer.invoke('files:suggest', sessionId, query)
+    suggest: (sessionId, query) => invoke('files:suggest', sessionId, query)
   },
   commands: {
-    list: () => ipcRenderer.invoke('commands:list'),
-    resolve: (name: string, args: string) => ipcRenderer.invoke('commands:resolve', name, args),
-    openFolder: () => ipcRenderer.invoke('commands:openFolder')
+    list: () => invoke('commands:list'),
+    resolve: (name: string, args: string) => invoke('commands:resolve', name, args),
+    openFolder: () => invoke('commands:openFolder')
   },
   panels: {
-    listDir: (sessionId, rel) => ipcRenderer.invoke('panels:listDir', sessionId, rel),
-    readFile: (sessionId, rel) => ipcRenderer.invoke('panels:readFile', sessionId, rel)
+    listDir: (sessionId, rel) => invoke('panels:listDir', sessionId, rel),
+    readFile: (sessionId, rel) => invoke('panels:readFile', sessionId, rel)
   },
   browser: {
-    workspaceUrl: (sessionId, rel) => ipcRenderer.invoke('browser:workspaceUrl', sessionId, rel),
-    openExternal: (url) => ipcRenderer.invoke('browser:openExternal', url)
+    workspaceUrl: (sessionId, rel) => invoke('browser:workspaceUrl', sessionId, rel),
+    openExternal: (url) => invoke('browser:openExternal', url)
   },
   term: {
-    open: (sessionId) => ipcRenderer.invoke('term:open', sessionId),
-    run: (sessionId, command, opts) => ipcRenderer.invoke('term:run', sessionId, command, opts),
-    createJob: (sessionId, name) => ipcRenderer.invoke('term:createJob', sessionId, name),
-    write: (sessionId, data, jobId) => ipcRenderer.invoke('term:write', sessionId, data, jobId),
+    open: (sessionId) => invoke('term:open', sessionId),
+    run: (sessionId, command, opts) => invoke('term:run', sessionId, command, opts),
+    createJob: (sessionId, name) => invoke('term:createJob', sessionId, name),
+    write: (sessionId, data, jobId) => invoke('term:write', sessionId, data, jobId),
     resize: (sessionId, cols, rows, jobId) =>
-      ipcRenderer.invoke('term:resize', sessionId, cols, rows, jobId),
-    kill: (sessionId, jobId) => ipcRenderer.invoke('term:kill', sessionId, jobId),
-    closeJob: (sessionId, jobId) => ipcRenderer.invoke('term:closeJob', sessionId, jobId),
-    setActiveJob: (sessionId, jobId) => ipcRenderer.invoke('term:setActiveJob', sessionId, jobId),
-    clear: (sessionId, jobId) => ipcRenderer.invoke('term:clear', sessionId, jobId),
-    restart: (sessionId, jobId) => ipcRenderer.invoke('term:restart', sessionId, jobId),
-    snapshot: (sessionId) => ipcRenderer.invoke('term:snapshot', sessionId),
-    openExternal: (sessionId) => ipcRenderer.invoke('term:openExternal', sessionId),
-    history: (sessionId) => ipcRenderer.invoke('term:history', sessionId),
-    pin: (sessionId, command, name) => ipcRenderer.invoke('term:pin', sessionId, command, name),
-    onData: (cb: (data: TermData) => void) => {
-      const l = (_e: Electron.IpcRendererEvent, data: TermData): void => cb(data)
-      ipcRenderer.on('term:data', l)
-      return () => ipcRenderer.removeListener('term:data', l)
-    }
+      invoke('term:resize', sessionId, cols, rows, jobId),
+    kill: (sessionId, jobId) => invoke('term:kill', sessionId, jobId),
+    closeJob: (sessionId, jobId) => invoke('term:closeJob', sessionId, jobId),
+    setActiveJob: (sessionId, jobId) => invoke('term:setActiveJob', sessionId, jobId),
+    clear: (sessionId, jobId) => invoke('term:clear', sessionId, jobId),
+    restart: (sessionId, jobId) => invoke('term:restart', sessionId, jobId),
+    snapshot: (sessionId) => invoke('term:snapshot', sessionId),
+    openExternal: (sessionId) => invoke('term:openExternal', sessionId),
+    history: (sessionId) => invoke('term:history', sessionId),
+    pin: (sessionId, command, name) => invoke('term:pin', sessionId, command, name),
+    onData: (cb: (data: TermData) => void) => subscribe('term:data', cb)
   },
   settings: {
-    get: () => ipcRenderer.invoke('settings:get'),
-    set: (patch: Partial<Settings>) => ipcRenderer.invoke('settings:set', patch)
+    get: () => invoke('settings:get'),
+    set: (patch: Partial<Settings>) => invoke('settings:set', patch)
   },
   mcp: {
-    status: () => ipcRenderer.invoke('mcp:status'),
-    reconnect: () => ipcRenderer.invoke('mcp:reconnect'),
-    previewInstall: (input) => ipcRenderer.invoke('mcp:previewInstall', input),
-    install: (input, opts) => ipcRenderer.invoke('mcp:install', input, opts)
+    status: () => invoke('mcp:status'),
+    reconnect: () => invoke('mcp:reconnect'),
+    previewInstall: (input) => invoke('mcp:previewInstall', input),
+    install: (input, opts) => invoke('mcp:install', input, opts)
   },
   update: {
-    check: () => ipcRenderer.invoke('update:check'),
-    install: () => ipcRenderer.invoke('update:install'),
-    getChannel: () => ipcRenderer.invoke('update:getChannel'),
-    setChannel: (channel: UpdateChannel) => ipcRenderer.invoke('update:setChannel', channel),
-    onAvailable: (cb: (info: UpdateInfo) => void) => {
-      const l = (_e: Electron.IpcRendererEvent, info: UpdateInfo): void => cb(info)
-      ipcRenderer.on('update:available', l)
-      return () => ipcRenderer.removeListener('update:available', l)
-    },
-    onDownloaded: (cb: (info: UpdateInfo) => void) => {
-      const l = (_e: Electron.IpcRendererEvent, info: UpdateInfo): void => cb(info)
-      ipcRenderer.on('update:downloaded', l)
-      return () => ipcRenderer.removeListener('update:downloaded', l)
-    }
+    check: () => invoke('update:check'),
+    install: () => invoke('update:install'),
+    getChannel: () => invoke('update:getChannel'),
+    setChannel: (channel: UpdateChannel) => invoke('update:setChannel', channel),
+    onAvailable: (cb: (info: UpdateInfo) => void) => subscribe('update:available', cb),
+    onDownloaded: (cb: (info: UpdateInfo) => void) => subscribe('update:downloaded', cb)
   },
   workspace: {
-    getTrust: (cwd) => ipcRenderer.invoke('workspace:getTrust', cwd),
-    setTrust: (cwd, level) => ipcRenderer.invoke('workspace:setTrust', cwd, level),
-    listTrusted: () => ipcRenderer.invoke('workspace:listTrusted')
+    getTrust: (cwd) => invoke('workspace:getTrust', cwd),
+    setTrust: (cwd, level) => invoke('workspace:setTrust', cwd, level),
+    listTrusted: () => invoke('workspace:listTrusted')
   },
   audit: {
-    list: (limit) => ipcRenderer.invoke('audit:list', limit),
-    clear: () => ipcRenderer.invoke('audit:clear'),
-    export: () => ipcRenderer.invoke('audit:export')
+    list: (limit) => invoke('audit:list', limit),
+    clear: () => invoke('audit:clear'),
+    export: () => invoke('audit:export')
   },
   palette: {
-    list: () => ipcRenderer.invoke('palette:list')
+    list: () => invoke('palette:list')
   },
   github: {
-    repo: (sessionId) => ipcRenderer.invoke('github:repo', sessionId),
+    repo: (sessionId) => invoke('github:repo', sessionId),
     createPr: (sessionId, draft: GitHubPrDraft) =>
-      ipcRenderer.invoke('github:createPr', sessionId, draft),
-    openPr: (url) => ipcRenderer.invoke('github:openPr', url)
+      invoke('github:createPr', sessionId, draft),
+    openPr: (url) => invoke('github:openPr', url)
   },
   crash: {
-    list: () => ipcRenderer.invoke('crash:list'),
-    reveal: () => ipcRenderer.invoke('crash:reveal'),
-    copyDiagnostics: () => ipcRenderer.invoke('crash:copyDiagnostics')
+    list: () => invoke('crash:list'),
+    reveal: () => invoke('crash:reveal'),
+    copyDiagnostics: () => invoke('crash:copyDiagnostics')
   },
   mcpCatalog: {
-    list: () => ipcRenderer.invoke('mcpCatalog:list')
+    list: () => invoke('mcpCatalog:list')
   },
   skillCatalog: {
-    list: () => ipcRenderer.invoke('skillCatalog:list')
+    list: () => invoke('skillCatalog:list')
   },
   agents: {
-    build: (prompt: string) => ipcRenderer.invoke('agents:build', prompt),
-    resolveSkills: (items) => ipcRenderer.invoke('agents:resolveSkills', items)
+    build: (prompt: string) => invoke('agents:build', prompt),
+    resolveSkills: (items) => invoke('agents:resolveSkills', items)
   },
   status: {
-    get: () => ipcRenderer.invoke('status:get'),
-    probe: () => ipcRenderer.invoke('status:probe')
+    get: () => invoke('status:get'),
+    probe: () => invoke('status:probe')
   },
-  onMenuAction: (cb: (action: string) => void) => {
-    const l = (_e: Electron.IpcRendererEvent, action: string): void => cb(action)
-    ipcRenderer.on('menu:action', l)
-    return () => ipcRenderer.removeListener('menu:action', l)
-  },
+  onMenuAction: (cb: (action: MenuMessage) => void) => subscribe('menu:action', cb),
   pathForFile: (file: File) => {
     try {
       return webUtils.getPathForFile(file)
@@ -198,10 +193,10 @@ const api: HarnessApi = {
     }
   },
   platform: process.platform,
-  getVersion: () => ipcRenderer.invoke('app:version'),
-  revealLogs: () => ipcRenderer.invoke('revealLogs'),
-  pickFolder: () => ipcRenderer.invoke('pickFolder'),
-  openExternal: (url: string) => ipcRenderer.invoke('openExternal', url)
+  getVersion: () => invoke('app:version'),
+  revealLogs: () => invoke('revealLogs'),
+  pickFolder: () => invoke('pickFolder'),
+  openExternal: (url: string) => invoke('openExternal', url)
 }
 
 contextBridge.exposeInMainWorld('harness', api)

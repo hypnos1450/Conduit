@@ -4,6 +4,38 @@ All notable changes to Conduit. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.9.1 — 2026-08-07
+
+**Permission scoping fix, and the seams that make it testable**
+
+- **"Always allow" on `apply_patch` no longer grants blanket write access.**
+  Write approvals are scoped per file, but the scoping only ever looked at a
+  `path` argument — which `apply_patch` doesn't have, since it takes a whole
+  patch. The key silently fell back to the bare tool name, so one approval
+  covered every future patch to every file in the workspace. A patch is now
+  keyed once per file it names, and every one of those files must already be
+  approved for the prompt to be skipped.
+- **A write tool that can't name its targets is never allowlisted.** `lsp_edit`
+  rename edits whatever files the language server resolves, so it always
+  confirms rather than being remembered against the single file you pointed at.
+- **Delete-only patches update the Preview panel again.** The dock parsed the
+  patch format with its own regex that omitted `Delete File:`. Tools now report
+  the paths they touched, so the renderer parses nothing.
+- **Fewer tools batched than should be.** `ask_user`, `spawn_agent` and
+  `update_plan` were treated as concurrent read-only calls — one blocks on a
+  human, one fans out its own model calls, one mutates session state. Batching
+  is now a property a tool declares rather than a side effect of its kind.
+- **Settings can't silently fail to save.** A new on/off setting used to need a
+  matching validator in the main process or it would be dropped without a word;
+  boolean settings now validate from their declared default.
+- **A mistyped IPC channel or menu action is a build error**, not a runtime
+  "no handler registered".
+
+Internals: the model call is now a seam, so the agent loop's permission and
+tool-dispatch logic can run under test without the network; the two delegated
+agent loops collapsed into one; search ranking, MCP secret handling and the
+install sanitiser moved out of IPC handlers. Test count 286 → 390.
+
 ## 0.9.0 — 2026-08-04
 
 **A real browser for agent output — plus the hardening that shipped with it**
