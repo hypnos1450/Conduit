@@ -21,7 +21,7 @@ import { skillStore } from './skills'
 
 const log = logger('agent-builder')
 
-const MODEL_IDS: ModelId[] = ['grok-build-0.1', 'grok-4.3']
+const MODEL_IDS: ModelId[] = ['grok-4.6', 'grok-build-0.1', 'grok-4.3']
 const PERMISSION_MODES: PermissionMode[] = ['ask', 'auto-edit', 'full-auto', 'plan-only']
 const MAX_REQUIRED = 8
 const MAX_SUGGESTED = 6
@@ -76,7 +76,7 @@ function designPrompt(installed: { name: string; description: string }[]): strin
 
 - name: a short title (2-4 words), e.g. "Rust Concurrency Reviewer".
 - instructions: the agent's role and behavior, written as a direct system-prompt directive to the agent (second person: "You review…"). Cover what it focuses on, how it should work, and what to prioritize or avoid. 2-6 sentences, concrete, no preamble.
-- model: "grok-build-0.1" (Grok 4.5, agentic coding, faster — the default) unless the brief is dominated by deep reasoning/architecture, then "grok-4.3".
+- model: "grok-4.6" (agentic coding, fastest and most capable — the default) unless the brief is dominated by deep reasoning/architecture over a very large codebase, then "grok-4.3".
 - permissionMode: "ask" (default), "auto-edit" (auto-approve edits, ask for commands), "full-auto", or "plan-only" (read/plan, never mutate — good for reviewers/auditors).
 - skills: capabilities relevant to THIS agent, in two tiers via the "optional" flag:
   - REQUIRED (optional=false): a specialized capability the agent genuinely needs beyond ordinary coding — document formats, a niche framework workflow, a domain procedure. Ordinary reading/editing/running/reviewing code needs NO required skill, so this list is often empty.

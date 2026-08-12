@@ -13,7 +13,8 @@ import {
 } from '../src/renderer/src/lib/sessions'
 import { escapeHtml, highlight, highlightOrEscape } from '../src/renderer/src/lib/highlight'
 import { pendingGates } from '../src/renderer/src/lib/team'
-import type { SessionMeta, TeamTask, TeamTaskReview } from '@shared/types'
+import { groupTranscript, summarizeGroup } from '../src/renderer/src/lib/transcript'
+import type { ChatItem, SessionMeta, TeamTask, TeamTaskReview } from '@shared/types'
 
 function s(over: Partial<SessionMeta> = {}): SessionMeta {
   return {
@@ -196,6 +197,95 @@ describe('highlight', () => {
 
   it('handles empty input', () => {
     expect(highlightOrEscape('')).toBe('')
+  })
+})
+
+describe('groupTranscript', () => {
+  const tool = (id: string, over: Partial<Extract<ChatItem, { kind: 'tool' }>> = {}): ChatItem =>
+    ({
+      kind: 'tool',
+      id,
+      ts: 0,
+      callId: id,
+      name: 'bash',
+      input: {},
+      status: 'ok',
+      ...over
+    }) as ChatItem
+  const text = (id: string): ChatItem => ({ kind: 'assistant', id, ts: 0, text: 'hi' }) as ChatItem
+  const kinds = (items: ChatItem[]): string[] =>
+    groupTranscript(items).map((r) => (r.kind === 'tool-group' ? `group:${r.items.length}` : r.item.kind))
+
+  it('collapses a run of consecutive tool calls into one row', () => {
+    expect(kinds([text('a'), tool('1'), tool('2'), tool('3'), text('b')])).toEqual([
+      'assistant',
+      'group:3',
+      'assistant'
+    ])
+  })
+
+  it('leaves a lone tool call as its own card', () => {
+    expect(kinds([text('a'), tool('1'), text('b')])).toEqual(['assistant', 'tool', 'assistant'])
+  })
+
+  it('does not group across the reply that separates two runs', () => {
+    // Otherwise a group would swallow the assistant text explaining what it did.
+    expect(kinds([tool('1'), tool('2'), text('a'), tool('3'), tool('4')])).toEqual([
+      'group:2',
+      'assistant',
+      'group:2'
+    ])
+  })
+
+  it('groups a run that ends the transcript, mid-turn', () => {
+    expect(kinds([text('a'), tool('1'), tool('2')])).toEqual(['assistant', 'group:2'])
+  })
+
+  it('breaks a run on an error or compaction item, not just replies', () => {
+    const err = { kind: 'error', id: 'e', ts: 0, message: 'boom' } as ChatItem
+    expect(kinds([tool('1'), tool('2'), err, tool('3'), tool('4')])).toEqual([
+      'group:2',
+      'error',
+      'group:2'
+    ])
+  })
+
+  it('keeps items in order and loses none', () => {
+    const items = [text('a'), tool('1'), tool('2'), text('b')]
+    const flat = groupTranscript(items).flatMap((r) => (r.kind === 'tool-group' ? r.items : [r.item]))
+    expect(flat.map((i) => i.id)).toEqual(['a', '1', '2', 'b'])
+  })
+
+  it('returns nothing for an empty transcript', () => {
+    expect(groupTranscript([])).toEqual([])
+  })
+})
+
+describe('summarizeGroup', () => {
+  const t = (over: Partial<Extract<ChatItem, { kind: 'tool' }>>): Extract<ChatItem, { kind: 'tool' }> =>
+    ({ kind: 'tool', id: 'x', ts: 0, callId: 'x', name: 'bash', input: {}, status: 'ok', ...over }) as Extract<
+      ChatItem,
+      { kind: 'tool' }
+    >
+
+  it('counts failures from both error and denied', () => {
+    const out = summarizeGroup([t({ status: 'error' }), t({ status: 'denied' }), t({})])
+    expect(out).toMatchObject({ total: 3, failed: 2 })
+  })
+
+  it('surfaces the in-flight call so a collapsed group stays live', () => {
+    const out = summarizeGroup([t({ id: 'a' }), t({ id: 'b', status: 'running' })])
+    expect(out.running?.id).toBe('b')
+  })
+
+  it('lists distinct names in call order', () => {
+    const out = summarizeGroup([t({ name: 'grep' }), t({ name: 'bash' }), t({ name: 'grep' })])
+    expect(out.names).toEqual(['grep', 'bash'])
+  })
+
+  it('sums reported durations and stays null when none are reported', () => {
+    expect(summarizeGroup([t({ durationMs: 100 }), t({ durationMs: 50 }), t({})]).durationMs).toBe(150)
+    expect(summarizeGroup([t({})]).durationMs).toBeNull()
   })
 })
 

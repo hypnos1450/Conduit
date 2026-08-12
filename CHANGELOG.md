@@ -4,6 +4,41 @@ All notable changes to Conduit. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.10.0 — 2026-08-12
+
+**Grok 4.6, and a chat that stops drowning in tool calls**
+
+- **Grok 4.6 is available and is the default for new sessions.** xAI's current
+  default coding model: 500K context, native reasoning, vision. Existing
+  sessions keep whatever model they were started with, and if you already have
+  settings, your default stays put until you change it in Settings.
+- **`xhigh` reasoning, on the model that has it.** 4.6 adds a fourth depth above
+  `high`. It only appears in the menu for models that accept it, and a session
+  carried from 4.6 to another model quietly drops back to that model's default
+  instead of sending a value it would reject.
+- **Consecutive tool calls collapse into one row.** A turn that made twenty
+  calls used to be twenty cards between you and the reply; it's now a single
+  line — `7 tool calls · grep, bash, apply_patch` — that expands on click.
+  Folding never hides what matters: a group containing a failure opens itself
+  and says how many failed, a group with a call still running shows that call
+  live, and a group never spans the reply that explains it.
+- **Tool cards say what the tool did.** The card used to rebuild its own summary
+  and only knew how to describe nine tools — `memory`, `skill`, `diagnostics`,
+  `session_search` and every MCP tool rendered as a wall of raw JSON. Cards now
+  show the summary the tool wrote, the same line the permission prompt showed
+  when you approved the call.
+- **Write approvals stay scoped inside a symlinked workspace.** If the path to
+  your project passed through a symlink (a macOS temp dir, a redirected home),
+  the per-file approval key silently degraded to the bare filename — so
+  "always allow" on `src/index.ts` also covered every other `index.ts` in the
+  tree. Paths are now resolved on both sides, and a target that can't be scoped
+  refuses the key and asks again rather than granting more than you meant.
+- **Delegated agents stop paying full price for their prompts.** Subagent and
+  builder runs re-send their system prompt every turn but never pinned
+  themselves to a cache server, so those turns scattered and billed uncached.
+  Each fan-out now shares one cache key per persona, so siblings reuse each
+  other's cached prefix.
+
 ## 0.9.1 — 2026-08-07
 
 **Permission scoping fix, and the seams that make it testable**

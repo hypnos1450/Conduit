@@ -149,8 +149,27 @@ describe('writeAllowKey', () => {
   it('produces a workspace-relative key', () => {
     expect(writeAllowKey('write_file', '/ws/src/a.ts', '/ws')).toBe('write_file:@src/a.ts')
   })
-  it('falls back to basename when the path escapes cwd', () => {
-    expect(writeAllowKey('write_file', '/etc/passwd', '/ws')).toBe('write_file:@passwd')
+  it('refuses a key when the path escapes cwd', () => {
+    // A basename fallback here (write_file:@passwd) would let one approval
+    // cover every file of that name anywhere — worse than asking again.
+    expect(writeAllowKey('write_file', '/etc/passwd', '/ws')).toBeNull()
+  })
+  it('keeps the full relative path when cwd reaches the file through a symlink', () => {
+    const real = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'wak-real-'))
+    const link = path.join(fs.realpathSync(os.tmpdir()), `wak-link-${process.pid}`)
+    fs.rmSync(link, { force: true })
+    fs.symlinkSync(real, link)
+    try {
+      fs.mkdirSync(path.join(real, 'src'), { recursive: true })
+      fs.writeFileSync(path.join(real, 'src', 'a.ts'), '')
+      // cwd goes through the symlink, the resolved target does not.
+      expect(writeAllowKey('write_file', path.join(real, 'src', 'a.ts'), link)).toBe(
+        'write_file:@src/a.ts'
+      )
+    } finally {
+      fs.rmSync(link, { force: true })
+      fs.rmSync(real, { recursive: true, force: true })
+    }
   })
 })
 

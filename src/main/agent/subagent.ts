@@ -26,6 +26,7 @@ async function runOne(
   task: string,
   cwd: string,
   signal: AbortSignal,
+  cacheKey: string,
   persona?: Persona
 ): Promise<string> {
   const profile = profileFor(persona?.model ?? 'grok-build-0.1')
@@ -47,6 +48,9 @@ async function runOne(
     temperature: profile.temperature,
     maxOutputTokens: 4000,
     maxTurns: SUBAGENT_MAX_TURNS,
+    // Siblings share this key: they differ only in the task message, so the
+    // one system prefix stays warm on a single server across the whole fan-out.
+    cacheKey,
     signal
   })
   if (run.outcome === 'cancelled') return '(subagent cancelled)'
@@ -112,9 +116,12 @@ export const spawnAgentTool: Tool = {
       persona = { name: found.name, instructions: found.instructions, skills: found.skills, model: found.model }
     }
 
+    // Scoped to the persona too — a different persona means a different system
+    // prompt, so there is nothing for it to reuse from the default investigator.
+    const cacheKey = `${ctx.sessionId}:sub:${persona?.name ?? ''}`
     const results = await Promise.all(
       tasks.map((task) =>
-        runOne(task, ctx.cwd, ctx.signal, persona).catch(
+        runOne(task, ctx.cwd, ctx.signal, cacheKey, persona).catch(
           (err) => `Subagent error: ${err instanceof Error ? err.message : String(err)}`
         )
       )

@@ -2,6 +2,7 @@
 // Works with both OAuth bearer tokens (subscription) and API keys, and
 // supports xAI's server-side tools (web_search, x_search) alongside our
 // client-side function tools.
+import { ReasoningEffort } from '@shared/types'
 import { authManager } from '../auth/store'
 import { XAI_API_BASE_URL } from '../auth/oauth'
 import { logger } from '../logger'
@@ -119,7 +120,7 @@ export interface StreamOptions {
   maxOutputTokens?: number
   temperature?: number
   /** Responses API reasoning depth (grok-4.5+); omit for the API default */
-  reasoningEffort?: 'low' | 'medium' | 'high'
+  reasoningEffort?: ReasoningEffort
   /** Pins the conversation to one cache server so the prompt prefix hits warm */
   cacheKey?: string
   /** Constrain the reply to a JSON Schema (Responses API structured outputs) */
@@ -222,7 +223,7 @@ async function streamOnce(opts: {
   maxOutputTokens?: number
   temperature?: number
   /** Responses API reasoning depth (grok-4.5+); omit for the API default */
-  reasoningEffort?: 'low' | 'medium' | 'high'
+  reasoningEffort?: ReasoningEffort
   /**
    * Routes a conversation's requests to the same cache server. Without it the
    * shared prompt prefix often lands cache-cold and bills at full input price

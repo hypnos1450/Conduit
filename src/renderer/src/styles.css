@@ -1341,6 +1341,72 @@ button svg {
   max-height: 320px;
   overflow: auto;
 }
+
+/* A run of consecutive tool calls, collapsed behind one header. */
+.tool-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  overflow: hidden;
+  font-size: 13px;
+}
+.tool-group.has-error {
+  border-color: color-mix(in srgb, var(--err) 45%, var(--border));
+}
+.tool-group-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 12px;
+  text-align: left;
+  transition: background 0.12s;
+}
+.tool-group-header:hover {
+  background: var(--bg-hover);
+}
+.tool-group-glyphs {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.tool-group-count {
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.tool-group-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.tool-group-fail {
+  font-size: 11px;
+  color: var(--err);
+  flex-shrink: 0;
+}
+.tool-group-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.tool-group-body {
+  border-top: 1px solid var(--border);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 .tool-card-body pre {
   font-family: var(--mono);
   font-size: 12px;
