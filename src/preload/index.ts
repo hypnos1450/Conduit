@@ -180,6 +180,9 @@ const api: HarnessApi = {
     build: (prompt: string) => invoke('agents:build', prompt),
     resolveSkills: (items) => invoke('agents:resolveSkills', items)
   },
+  teams: {
+    build: (prompt: string) => invoke('teams:build', prompt)
+  },
   status: {
     get: () => invoke('status:get'),
     probe: () => invoke('status:probe')

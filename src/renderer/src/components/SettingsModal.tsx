@@ -13,7 +13,9 @@ import {
   PermissionMode,
   Settings,
   SkillImportReport,
-  SkillMeta
+  SkillMeta,
+  TeamBuildResult,
+  TeamBuildRole
 } from '@shared/types'
 import { TEAM_TEMPLATES, TeamTemplate } from '@shared/team-templates'
 import { CheckIcon, XIcon } from './Icons'
@@ -1221,6 +1223,282 @@ export function instantiateTemplate(
   }
 }
 
+function TeamBuilder({ onDraft }: { onDraft: (team: TeamBuildResult) => void }): JSX.Element {
+  const [brief, setBrief] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const build = async (): Promise<void> => {
+    if (!brief.trim() || busy) return
+    setBusy(true)
+    setErr(null)
+    try {
+      onDraft(await window.harness.teams.build(brief.trim()))
+      setBrief('')
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="agent-builder">
+      <div className="setting-label">Build a team with AI</div>
+      <span className="setting-help">
+        Describe the team you want. The model drafts the whole roster — an orchestrator that does the
+        work plus read-only advisors — picks each role&apos;s model and skills, and chooses which
+        reviews must pass before a task can close. You accept the roster, or just the parts you want.
+      </span>
+      <textarea
+        className="login-input"
+        rows={3}
+        placeholder="e.g. A team that ships a React Native app: someone owning product scope, one on architecture, and hard testing and security review before anything is done."
+        value={brief}
+        maxLength={4000}
+        disabled={busy}
+        onChange={(e) => setBrief(e.target.value)}
+      />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <button className="btn" disabled={busy || !brief.trim()} onClick={() => void build()}>
+          {busy ? 'Designing the team…' : '✨ Generate team'}
+        </button>
+      </div>
+      {err && <div className="skill-install-report err">{err}</div>}
+    </div>
+  )
+}
+
+/**
+ * Review panel for a generated roster. Every role and every skill is opt-in
+ * (required skills start checked, suggestions don't), except the orchestrator —
+ * a team without one has nobody to run the board.
+ */
+function TeamDraftReview({
+  build,
+  settings,
+  onCancel,
+  onSaved
+}: {
+  build: TeamBuildResult
+  settings: Settings
+  onCancel: () => void
+  onSaved: (patch: { customAgents: CustomAgent[]; teams: AgentTeam[] }) => Promise<void>
+}): JSX.Element {
+  const [name, setName] = useState(build.name)
+  const [roles, setRoles] = useState(() => new Set(build.roles.map((r) => r.name)))
+  const [skills, setSkills] = useState<Set<string>>(
+    () =>
+      new Set(
+        build.roles.flatMap((r) =>
+          r.skills.filter((s) => !s.optional).map((s) => `${r.name}::${s.ref}`)
+        )
+      )
+  )
+  const [gates, setGates] = useState(() => new Set(build.reviewGates))
+  const [saving, setSaving] = useState<string | null>(null)
+  const [errors, setErrors] = useState<string[]>([])
+
+  const orchestrator = build.roles.find((r) => r.orchestrator)
+  const key = (roleName: string, ref: string): string => `${roleName}::${ref}`
+  const accepted = build.roles.filter((r) => roles.has(r.name))
+
+  const toggleRole = (r: TeamBuildRole): void => {
+    if (r.orchestrator) return
+    setRoles((prev) => {
+      const next = new Set(prev)
+      if (next.has(r.name)) {
+        next.delete(r.name)
+        // A gate on a role that isn't in the team would block every task.
+        setGates((g) => {
+          const ng = new Set(g)
+          ng.delete(r.name)
+          return ng
+        })
+      } else {
+        next.add(r.name)
+      }
+      return next
+    })
+  }
+
+  const acceptAll = (): void => {
+    setRoles(new Set(build.roles.map((r) => r.name)))
+    setSkills(new Set(build.roles.flatMap((r) => r.skills.map((s) => key(r.name, s.ref)))))
+    setGates(new Set(build.reviewGates))
+  }
+
+  const save = async (): Promise<void> => {
+    if (!orchestrator || saving) return
+    setErrors([])
+    const failures: string[] = []
+    const agents: CustomAgent[] = []
+
+    for (const role of accepted) {
+      const wanted = role.skills.filter((s) => skills.has(key(role.name, s.ref)))
+      // Skills already present attach by name; the rest have to be fetched and
+      // validated first, which is the same path the single-agent builder uses.
+      let names = wanted.filter((s) => s.status === 'installed').map((s) => s.ref)
+      const toInstall = wanted.filter((s) => s.status !== 'installed')
+      if (toInstall.length) {
+        setSaving(`Installing skills for ${role.name}…`)
+        const resolved = await window.harness.agents.resolveSkills(toInstall)
+        for (const item of resolved) {
+          if (item.installedNames?.length) names = [...names, ...item.installedNames]
+          else failures.push(`${role.name}: ${item.capability} — ${item.error ?? 'not installed'}`)
+        }
+      }
+      agents.push({
+        id: crypto.randomUUID(),
+        name: role.name,
+        instructions: role.instructions,
+        skills: [...new Set(names)],
+        model: role.model,
+        permissionMode: role.permissionMode
+      })
+    }
+
+    setSaving('Saving team…')
+    const byName = new Map(agents.map((a) => [a.name, a.id]))
+    const team: AgentTeam = {
+      id: crypto.randomUUID(),
+      name: name.trim() || build.name,
+      description: build.description,
+      orchestratorId: byName.get(orchestrator.name) ?? agents[0].id,
+      memberIds: agents.filter((a) => a.name !== orchestrator.name).map((a) => a.id),
+      reviewGates: [...gates].filter((g) => byName.has(g) && g !== orchestrator.name)
+    }
+    try {
+      await onSaved({
+        customAgents: [...(settings.customAgents ?? []), ...agents],
+        teams: [...(settings.teams ?? []), team]
+      })
+      // A skill that failed to install is worth saying out loud — the team saved
+      // fine, but that role is missing a capability it was designed with.
+      if (failures.length) setErrors(failures)
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  return (
+    <div className="agent-form">
+      <label className="agent-field">
+        <span className="setting-label">Team name</span>
+        <input type="text" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} />
+      </label>
+      {build.description && <div className="setting-help">{build.description}</div>}
+
+      <div className="agent-field">
+        <div className="team-draft-head">
+          <span className="setting-label">Proposed roles</span>
+          <button className="mini-btn" onClick={acceptAll}>
+            Accept everything
+          </button>
+        </div>
+        <span className="setting-help">
+          The orchestrator does the work; the rest are read-only advisors it delegates to. Uncheck
+          any role or skill you don&apos;t want.
+        </span>
+        <div className="team-draft-roles">
+          {build.roles.map((role) => {
+            const on = roles.has(role.name)
+            return (
+              <div key={role.name} className={`team-draft-role${on ? '' : ' off'}`}>
+                <label className="team-draft-role-head">
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    disabled={role.orchestrator}
+                    onChange={() => toggleRole(role)}
+                  />
+                  <span className="team-draft-role-name">{role.name}</span>
+                  {role.orchestrator && <span className="plan-badge ok">orchestrator</span>}
+                  <span className="setting-help">
+                    {MODELS.find((m) => m.id === role.model)?.label ?? role.model} ·{' '}
+                    {role.permissionMode}
+                  </span>
+                </label>
+                <div className="team-draft-role-instructions">{role.instructions}</div>
+                {role.skills.length > 0 && (
+                  <div className="team-draft-skills">
+                    {role.skills.map((s) => (
+                      <label key={s.ref} className="team-draft-skill">
+                        <input
+                          type="checkbox"
+                          checked={skills.has(key(role.name, s.ref))}
+                          disabled={!on}
+                          onChange={() =>
+                            setSkills((prev) => {
+                              const next = new Set(prev)
+                              const k = key(role.name, s.ref)
+                              if (next.has(k)) next.delete(k)
+                              else next.add(k)
+                              return next
+                            })
+                          }
+                        />
+                        <PlanSkillRow item={s} />
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="agent-field">
+        <span className="setting-label">Review gates</span>
+        <span className="setting-help">
+          These roles must record a passing review before a task can close.
+        </span>
+        <div className="agent-skill-grid">
+          {accepted
+            .filter((r) => !r.orchestrator)
+            .map((r) => (
+              <label key={r.name} className="agent-skill">
+                <input
+                  type="checkbox"
+                  checked={gates.has(r.name)}
+                  onChange={() =>
+                    setGates((prev) => {
+                      const next = new Set(prev)
+                      if (next.has(r.name)) next.delete(r.name)
+                      else next.add(r.name)
+                      return next
+                    })
+                  }
+                />
+                <span>{r.name}</span>
+              </label>
+            ))}
+          {accepted.length < 2 && <span className="setting-help">Accept a role to add a gate.</span>}
+        </div>
+      </div>
+
+      {errors.length > 0 && (
+        <div className="skill-install-report err">
+          Saved, but some skills could not be installed:
+          {errors.map((e) => (
+            <div key={e}>{e}</div>
+          ))}
+        </div>
+      )}
+
+      <div className="agent-form-actions">
+        <button className="btn primary" disabled={!!saving || !name.trim()} onClick={() => void save()}>
+          {saving ?? `Save team (${accepted.length} role${accepted.length === 1 ? '' : 's'})`}
+        </button>
+        <button className="mini-btn" disabled={!!saving} onClick={onCancel}>
+          Discard
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function TeamsSection(props: {
   settings: Settings
   update: (patch: Partial<Settings>) => Promise<void>
@@ -1228,6 +1506,7 @@ function TeamsSection(props: {
   const agents = props.settings.customAgents ?? []
   const teams = props.settings.teams ?? []
   const [draft, setDraft] = useState<AgentTeam | null>(null)
+  const [built, setBuilt] = useState<TeamBuildResult | null>(null)
   const [busy, setBusy] = useState(false)
   const agentName = (id: string): string => agents.find((a) => a.id === id)?.name ?? '(deleted agent)'
 
@@ -1267,6 +1546,20 @@ function TeamsSection(props: {
         ? { ...d, reviewGates: d.reviewGates.includes(name) ? d.reviewGates.filter((g) => g !== name) : [...d.reviewGates, name] }
         : d
     )
+
+  if (built) {
+    return (
+      <TeamDraftReview
+        build={built}
+        settings={props.settings}
+        onCancel={() => setBuilt(null)}
+        onSaved={async (patch) => {
+          await props.update(patch)
+          setBuilt(null)
+        }}
+      />
+    )
+  }
 
   if (draft) {
     const memberNames = draft.memberIds.map(agentName)
@@ -1345,6 +1638,8 @@ function TeamsSection(props: {
 
   return (
     <div className="memory-section">
+      <TeamBuilder onDraft={setBuilt} />
+      <div className="agent-or">or start from a template</div>
       {TEAM_TEMPLATES.map((tmpl) => (
         <div key={tmpl.id} className="agent-card">
           <div className="agent-card-main">

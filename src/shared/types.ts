@@ -687,6 +687,26 @@ export interface AgentBuildResult {
   notes?: string
 }
 
+/** One proposed role in an AI-generated team, before the user accepts it. */
+export interface TeamBuildRole {
+  name: string
+  instructions: string
+  model: ModelId
+  permissionMode: PermissionMode
+  /** The single role that owns the board and does the writing */
+  orchestrator: boolean
+  skills: AgentBuildSkill[]
+}
+
+/** Draft team the AI generated from a natural-language description. */
+export interface TeamBuildResult {
+  name: string
+  description: string
+  roles: TeamBuildRole[]
+  /** Role names whose review must pass before a gated task can close */
+  reviewGates: string[]
+}
+
 export interface TurnChangeSummary {
   sessionId: string
   files: { path: string; kind: 'write' | 'edit' }[]
@@ -988,6 +1008,10 @@ export interface HarnessApi {
     build(prompt: string): Promise<AgentBuildResult>
     /** Install the catalog / web-searched skills in a build plan; returns updated items */
     resolveSkills(items: AgentBuildSkill[]): Promise<AgentBuildSkill[]>
+  }
+  teams: {
+    /** Draft a whole roster (orchestrator + advisors + gates) from a brief */
+    build(prompt: string): Promise<TeamBuildResult>
   }
   status: {
     /** Network + auth health for offline banner */
