@@ -5,6 +5,22 @@ import os from 'node:os'
 import { ModelId } from '@shared/types'
 import { resolveShell, ShellSpec } from './shell'
 
+/**
+ * USD per million tokens. xAI bills a request that reaches
+ * `longContextThreshold` prompt tokens at the long rates for ALL of its
+ * tokens, not just the excess — which is why the compaction thresholds sit
+ * just under it.
+ */
+export interface ModelPricing {
+  input: number
+  cachedInput: number
+  output: number
+  longInput: number
+  longCachedInput: number
+  longOutput: number
+  longContextThreshold: number
+}
+
 export interface ModelProfile {
   id: ModelId
   /**
@@ -22,7 +38,27 @@ export interface ModelProfile {
   temperature: number
   /** Max agentic turns (model→tools round trips) per user message */
   maxTurns: number
+  pricing: ModelPricing
   systemPrompt(opts: SystemPromptOpts): string
+}
+
+/**
+ * What one API call cost, in USD. `promptTokens` counts every input token
+ * including the cached ones, so the cached share is billed at the cheaper rate
+ * and the remainder at full price. The whole request takes the long-context
+ * rates once its prompt reaches the threshold.
+ */
+export function requestCostUsd(
+  pricing: ModelPricing,
+  usage: { promptTokens: number; completionTokens: number; cachedTokens: number }
+): number {
+  const long = usage.promptTokens >= pricing.longContextThreshold
+  const inRate = long ? pricing.longInput : pricing.input
+  const cachedRate = long ? pricing.longCachedInput : pricing.cachedInput
+  const outRate = long ? pricing.longOutput : pricing.output
+  const cached = Math.min(usage.cachedTokens, usage.promptTokens)
+  const fresh = usage.promptTokens - cached
+  return (fresh * inRate + cached * cachedRate + usage.completionTokens * outRate) / 1_000_000
 }
 
 export interface SystemPromptOpts {
@@ -287,6 +323,15 @@ export const PROFILES: Record<ModelId, ModelProfile> = {
     compactAt: 0.18,
     temperature: 0.2,
     maxTurns: 60,
+    pricing: {
+      input: 1.25,
+      cachedInput: 0.2,
+      output: 2.5,
+      longInput: 2.5,
+      longCachedInput: 0.4,
+      longOutput: 5.0,
+      longContextThreshold: 200_000
+    },
     systemPrompt: (opts) => assemble([HARNESS_CORE, GROK_43_ADDENDUM], opts)
   },
   'grok-build-0.1': {
@@ -311,6 +356,15 @@ export const PROFILES: Record<ModelId, ModelProfile> = {
     compactAt: 0.36,
     temperature: 0.1,
     maxTurns: 80,
+    pricing: {
+      input: 2.0,
+      cachedInput: 0.3,
+      output: 6.0,
+      longInput: 4.0,
+      longCachedInput: 0.6,
+      longOutput: 12.0,
+      longContextThreshold: 200_000
+    },
     systemPrompt: (opts) => assemble([HARNESS_CORE, codingAddendum('Grok Build — Grok 4.5')], opts)
   },
   'grok-4.6': {
@@ -327,6 +381,15 @@ export const PROFILES: Record<ModelId, ModelProfile> = {
     compactAt: 0.36,
     temperature: 0.1,
     maxTurns: 80,
+    pricing: {
+      input: 2.0,
+      cachedInput: 0.5,
+      output: 6.0,
+      longInput: 4.0,
+      longCachedInput: 1.0,
+      longOutput: 12.0,
+      longContextThreshold: 200_000
+    },
     systemPrompt: (opts) => assemble([HARNESS_CORE, codingAddendum('Grok 4.6')], opts)
   }
 }

@@ -263,6 +263,20 @@ export function sessionToMarkdown(rec: SessionRecord): string {
       case 'note':
         lines.push(`_${item.text}_`, '')
         break
+      case 'receipt': {
+        const bits = [
+          `${item.files.length} file${item.files.length === 1 ? '' : 's'} changed`,
+          `${item.toolCount} tool${item.toolCount === 1 ? '' : 's'}`,
+          `${(item.durationMs / 1000).toFixed(1)}s`
+        ]
+        if (item.costUsd !== undefined) bits.push(`$${item.costUsd.toFixed(3)}`)
+        if (item.failedCount) bits.push(`${item.failedCount} failed`)
+        lines.push(`> _${bits.join(' · ')}_`, '')
+        if (item.files.length) {
+          lines.push(...item.files.map((f) => `> - ${f.kind === 'write' ? 'new' : 'edit'} \`${f.path}\``), '')
+        }
+        break
+      }
       case 'error':
         lines.push(`> ⚠️ ${item.message}`, '')
         break

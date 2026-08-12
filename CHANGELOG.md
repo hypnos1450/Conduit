@@ -4,6 +4,28 @@ All notable changes to Conduit. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.11.0 — 2026-08-12
+
+**What a turn did, and what it cost**
+
+- **A spend meter next to the context meter.** Sessions now show estimated cost
+  (`$0.34`) alongside the context percentage. It is priced per request from
+  xAI's published rates — cached input included, which is most of the discount
+  on a long session — because the price tier depends on each request's own
+  prompt size and can't be recovered from summed totals afterwards.
+- **The 200K price cliff is finally visible.** Past that prompt size, xAI bills
+  every token in the request at roughly double. The meter turns amber and says
+  so. Conduit has always compacted just under that line; now you can see the
+  line it's protecting.
+- **Turns end with a receipt.** `4 files changed · 12 tools · 47s · $0.08`,
+  expanding to the list of files the turn wrote or edited plus its token split.
+  Turns that only exchanged text get no receipt — a footer under every reply is
+  the clutter this is meant to relieve — but a turn you stopped or that errored
+  still gets one, since "what did it change before I stopped it" is exactly
+  when you want to know.
+- Sessions from before this release show no cost: their spend is unknown, which
+  is not the same as $0.00.
+
 ## 0.10.0 — 2026-08-12
 
 **Grok 4.6, and a chat that stops drowning in tool calls**

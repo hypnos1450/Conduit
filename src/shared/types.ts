@@ -288,6 +288,12 @@ export interface SessionMeta {
   totalInputTokens?: number
   totalOutputTokens?: number
   totalCachedTokens?: number
+  /**
+   * Estimated USD across the session, summed per request as usage arrives.
+   * Absent on sessions that predate cost tracking — their spend is unknown
+   * rather than zero, so the meter stays hidden instead of showing $0.00.
+   */
+  totalCostUsd?: number
   /** Searchable session digest from background review */
   digest?: string
   /** Plan-only mode for this session (overrides settings.permissionMode) */
@@ -363,6 +369,31 @@ export type ChatItem =
   | { kind: 'error'; id: string; ts: number; message: string }
   /** Small system line: memory updates, checkpoint restores, etc. */
   | { kind: 'note'; id: string; ts: number; text: string }
+  /**
+   * End-of-turn summary: what the agent touched, how long it took, what it
+   * cost. Only written for turns that actually did something (ran a tool or
+   * changed a file) — a plain question and answer gets no receipt.
+   */
+  | {
+      kind: 'receipt'
+      id: string
+      ts: number
+      stopReason: TurnStopReason
+      /** Wall-clock from the user's message to the end of the turn */
+      durationMs: number
+      toolCount: number
+      /** Tool calls that errored or were denied */
+      failedCount: number
+      /** Files written or edited during the turn */
+      files: { path: string; kind: 'write' | 'edit' }[]
+      inputTokens: number
+      outputTokens: number
+      cachedTokens: number
+      /** Estimated USD for this turn's API calls; absent if usage was missing */
+      costUsd?: number
+    }
+
+export type TurnStopReason = 'done' | 'cancelled' | 'error' | 'max-turns'
 
 export interface Usage {
   /**
@@ -378,6 +409,19 @@ export interface Usage {
   sessionInputTokens: number
   sessionOutputTokens: number
   sessionCachedTokens: number
+  /**
+   * Estimated USD across every API call in this session, accumulated per
+   * request (the price tier depends on each request's own prompt size, so it
+   * cannot be recovered from the lifetime token totals). Absent on sessions
+   * that predate cost tracking — unknown, which is not the same as $0.00.
+   */
+  sessionCostUsd?: number
+  /**
+   * Prompt size at which this model's whole request switches to long-context
+   * pricing (roughly double). Lets the meter warn before the bill changes
+   * rather than after.
+   */
+  longContextThreshold: number
 }
 
 export interface PermissionRequest {
