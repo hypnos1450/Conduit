@@ -119,6 +119,7 @@ export const CHANNELS = [
   // agents
   'agents:build',
   'agents:resolveSkills',
+  'teams:build',
   // status
   'status:get',
   'status:probe',

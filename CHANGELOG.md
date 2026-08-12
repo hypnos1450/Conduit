@@ -4,6 +4,29 @@ All notable changes to Conduit. Each release on GitHub carries the notes
 from its section here — the release workflow extracts them automatically when a
 version tag is pushed.
 
+## 0.12.0 — 2026-08-12
+
+**Describe a team, get the whole roster**
+
+- **Build a team with AI**, the way you can already build a single agent.
+  Describe what the team is for and the model drafts the entire roster: an
+  orchestrator that owns the board and does the work, read-only advisor roles it
+  delegates to, each role's instructions, model and permissions, and the reviews
+  that must pass before a task can close.
+- **Every role finds its own skills.** Each generated role gets a skill plan
+  matched against what you already have, then the curated catalog, then a web
+  search for an installable one — the same path, and the same install
+  validation, the single-agent builder uses.
+- **You accept the parts you want.** Every role and every skill has its own
+  checkbox (needed skills start checked, suggestions don't), with an "accept
+  everything" shortcut. Declined roles dim rather than vanish, so changing your
+  mind is easy, and review gates only offer the roles you actually kept. If a
+  skill fails to install the team still saves and says which one didn't make it.
+- A generated roster is checked before it can be saved: exactly one
+  orchestrator, advisors always read-only, no duplicate role names, and no
+  review gate naming a role that isn't on the team — a gate like that could
+  never be satisfied, leaving every task permanently open.
+
 ## 0.11.0 — 2026-08-12
 
 **What a turn did, and what it cost**

@@ -53,6 +53,7 @@ import { createPullRequest, detectRepo } from './github'
 import { MCP_CATALOG } from './mcp-catalog'
 import { SKILL_CATALOG } from './skill-catalog'
 import { buildAgentDraft, resolveSkills } from './agent/agent-builder'
+import { buildTeamDraft } from './agent/team-builder'
 import type { AgentBuildSkill } from '@shared/types'
 import { logsDirectory as logsDir } from './logger'
 import type {
@@ -1001,6 +1002,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   handle('agents:resolveSkills', (_e, items: AgentBuildSkill[]) =>
     resolveSkills(Array.isArray(items) ? items : [], settings)
   )
+  handle('teams:build', (_e, prompt: string) => buildTeamDraft(String(prompt ?? ''), settings))
 
   // ---- offline / auth status
   handle('status:get', async (): Promise<OfflineStatus> => {

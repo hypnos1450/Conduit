@@ -1969,6 +1969,68 @@ button svg {
   gap: 6px;
   margin-top: 6px;
 }
+/* ---- AI-generated team: roster review before saving */
+.team-draft-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.team-draft-roles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.team-draft-role {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: opacity 0.12s;
+}
+/* A declined role stays readable — you may want to re-check it. */
+.team-draft-role.off {
+  opacity: 0.45;
+}
+.team-draft-role-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.team-draft-role-name {
+  font-weight: 600;
+  color: var(--text);
+}
+.team-draft-role-instructions {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.team-draft-skills {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.team-draft-skill {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+.team-draft-skill > input {
+  margin-top: 9px;
+  flex-shrink: 0;
+}
+.team-draft-skill .plan-skill {
+  flex: 1;
+  min-width: 0;
+}
+
 .plan-skill {
   display: flex;
   align-items: flex-start;
