@@ -15,7 +15,7 @@ import {
   effortForModel,
   effortsFor
 } from '@shared/types'
-import ItemView, { DiffView, ToolGroup } from './Items'
+import ItemView, { DiffView, ToolGroup, formatCost } from './Items'
 import { shortPath } from '../lib/sessions'
 import { groupTranscript } from '../lib/transcript'
 import {
@@ -618,6 +618,18 @@ export default function Chat(props: {
             >
               {Math.round(usage.contextUsed * 100)}% · {fmt(usage.contextTokens)}
               <span className="context-pill-dim"> / {fmt(usage.contextWindow)}</span>
+            </span>
+          )}
+          {usage?.sessionCostUsd !== undefined && (
+            <span
+              className={`context-pill${usage.contextTokens >= usage.longContextThreshold ? ' warn' : ''}`}
+              title={
+                usage.contextTokens >= usage.longContextThreshold
+                  ? `Estimated spend this session: ${formatCost(usage.sessionCostUsd)}\n\nThis prompt is past ${fmt(usage.longContextThreshold)} tokens, so every token in each request now bills at the long-context rate — about double. The session compacts automatically to get back under it.`
+                  : `Estimated spend this session: ${formatCost(usage.sessionCostUsd)}\n\nPriced per request from xAI's published rates, including the cached-input discount. An estimate, not your invoice.`
+              }
+            >
+              {formatCost(usage.sessionCostUsd)}
             </span>
           )}
           <span className="context-pill" title={session.cwd}>

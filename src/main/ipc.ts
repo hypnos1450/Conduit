@@ -252,7 +252,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
             contextUsed: Math.min(1, contextTokens / profile.contextWindow),
             sessionInputTokens: rec.meta.totalInputTokens ?? 0,
             sessionOutputTokens: rec.meta.totalOutputTokens ?? 0,
-            sessionCachedTokens: rec.meta.totalCachedTokens ?? 0
+            sessionCachedTokens: rec.meta.totalCachedTokens ?? 0,
+            sessionCostUsd: rec.meta.totalCostUsd,
+            longContextThreshold: profile.pricing.longContextThreshold
           }
         : undefined
     const team = rec.meta.teamId

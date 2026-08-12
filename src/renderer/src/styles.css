@@ -351,6 +351,11 @@ button svg {
 .context-pill-dim {
   opacity: 0.65;
 }
+/* Past the long-context threshold every token bills at ~double. */
+.context-pill.warn {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+}
 
 .message-scroll {
   flex: 1;
@@ -911,6 +916,80 @@ button svg {
   color: var(--text-tertiary);
   font-size: 12px;
   text-align: center;
+}
+
+/* End-of-turn receipt: quieter than a tool card, it closes the turn. */
+.receipt {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-elevated) 55%, transparent);
+  overflow: hidden;
+}
+.receipt.cancelled { border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+.receipt.error { border-color: color-mix(in srgb, var(--err) 40%, var(--border)); }
+.receipt-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  transition: background 0.12s;
+}
+.receipt-header:not(:disabled):hover { background: var(--bg-hover); }
+.receipt-header:disabled { cursor: default; }
+.receipt-mark {
+  font-family: var(--mono);
+  color: var(--ok);
+  flex-shrink: 0;
+}
+.receipt.cancelled .receipt-mark { color: var(--warn); }
+.receipt.error .receipt-mark,
+.receipt.max-turns .receipt-mark { color: var(--err); }
+.receipt-parts {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.receipt-fail { color: var(--err); flex-shrink: 0; }
+.receipt-stop { color: var(--warn); flex-shrink: 0; }
+.receipt-files {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.receipt-file {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+.receipt-file-kind {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  width: 30px;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+.receipt-file-kind.write { color: var(--ok); }
+.receipt-file-path {
+  font-family: var(--mono);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.receipt-tokens {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 
 .msg-images {

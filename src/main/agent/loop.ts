@@ -19,6 +19,7 @@ import {
   PermissionRequest,
   Settings,
   TeamState,
+  TurnStopReason,
   effortForModel
 } from '@shared/types'
 import {
@@ -31,7 +32,14 @@ import {
   UserContentPart,
   streamCompletion
 } from './provider'
-import { COMPACTION_PROMPT, REVIEW_PROMPT, REVIEW_SCHEMA, estimateTokens, profileFor } from './profiles'
+import {
+  COMPACTION_PROMPT,
+  REVIEW_PROMPT,
+  REVIEW_SCHEMA,
+  estimateTokens,
+  profileFor,
+  requestCostUsd
+} from './profiles'
 import { logger } from '../logger'
 import { MemoryTarget, memoryStore } from './memory'
 import { skillStore } from './skills'
@@ -199,6 +207,11 @@ export class AgentRun {
     const { defs: toolDefsForRun, byName } = this.resolveTools()
     this.runTools = byName
     this.session.lastTurnChanges = []
+    const turnStartedAt = Date.now()
+    let turnCost = 0
+    let turnInputTokens = 0
+    let turnOutputTokens = 0
+    let turnCachedTokens = 0
 
     const images = (attachments?.images ?? []).slice(0, 8)
     const files = (attachments?.files ?? []).slice(0, 5)
@@ -302,6 +315,14 @@ export class AgentRun {
             (this.session.meta.totalOutputTokens ?? 0) + result.usage.completionTokens
           this.session.meta.totalCachedTokens =
             (this.session.meta.totalCachedTokens ?? 0) + result.usage.cachedTokens
+          // Priced here, per request: the tier depends on this prompt's size, so
+          // it cannot be recovered later from the summed totals.
+          const cost = requestCostUsd(profile.pricing, result.usage)
+          this.session.meta.totalCostUsd = (this.session.meta.totalCostUsd ?? 0) + cost
+          turnCost += cost
+          turnInputTokens += result.usage.promptTokens
+          turnOutputTokens += result.usage.completionTokens
+          turnCachedTokens += result.usage.cachedTokens
           this.emit({
             type: 'usage',
             sessionId,
@@ -311,7 +332,9 @@ export class AgentRun {
               contextUsed: Math.min(1, contextTokens / profile.contextWindow),
               sessionInputTokens: this.session.meta.totalInputTokens ?? 0,
               sessionOutputTokens: this.session.meta.totalOutputTokens ?? 0,
-              sessionCachedTokens: this.session.meta.totalCachedTokens ?? 0
+              sessionCachedTokens: this.session.meta.totalCachedTokens ?? 0,
+              sessionCostUsd: this.session.meta.totalCostUsd ?? 0,
+              longContextThreshold: profile.pricing.longContextThreshold
             }
           })
         }
@@ -375,6 +398,14 @@ export class AgentRun {
       }
     } finally {
       if (stopReason === 'cancelled') this.reconcileCancelledToolCalls()
+      this.pushReceipt({
+        stopReason,
+        durationMs: Date.now() - turnStartedAt,
+        costUsd: turnCost,
+        inputTokens: turnInputTokens,
+        outputTokens: turnOutputTokens,
+        cachedTokens: turnCachedTokens
+      })
       await sessionStore.save(this.session)
       this.emit({ type: 'turn-end', sessionId, stopReason })
       if (stopReason === 'done' && this.settings.memoryEnabled) {
@@ -416,6 +447,42 @@ export class AgentRun {
       if (this.cancelled || this.abort.signal.aborted) throw err
       return await this.stream(opts)
     }
+  }
+
+  /**
+   * Close the turn with a receipt of what it did. Skipped for turns that only
+   * exchanged text — a receipt under every reply would be the clutter this is
+   * meant to relieve — and for a turn that failed before doing anything, where
+   * the error item already says everything.
+   */
+  private pushReceipt(summary: {
+    stopReason: TurnStopReason
+    durationMs: number
+    costUsd: number
+    inputTokens: number
+    outputTokens: number
+    cachedTokens: number
+  }): void {
+    const turnItems = this.session.items.slice(this.turnStartIndex)
+    const tools = turnItems.filter((i): i is Extract<ChatItem, { kind: 'tool' }> => i.kind === 'tool')
+    const files = this.session.lastTurnChanges ?? []
+    if (!tools.length && !files.length) return
+    this.pushItem({
+      kind: 'receipt',
+      id: id(),
+      ts: Date.now(),
+      stopReason: summary.stopReason,
+      durationMs: summary.durationMs,
+      toolCount: tools.length,
+      failedCount: tools.filter((t) => t.status === 'error' || t.status === 'denied').length,
+      files: [...files],
+      inputTokens: summary.inputTokens,
+      outputTokens: summary.outputTokens,
+      cachedTokens: summary.cachedTokens,
+      // A turn where no usage arrived (cancelled before the first response)
+      // reports no cost rather than a confident $0.00.
+      costUsd: summary.inputTokens || summary.outputTokens ? summary.costUsd : undefined
+    })
   }
 
   // ---------------------------------------------------- background review

@@ -36,6 +36,8 @@ function ItemView({
       return <div className="msg-error">{item.message}</div>
     case 'note':
       return <div className="msg-note">{item.text}</div>
+    case 'receipt':
+      return <ReceiptView item={item} />
     default:
       return null
   }
@@ -362,6 +364,75 @@ function ToolGroupView({
 }
 
 export const ToolGroup = memo(ToolGroupView)
+
+/** USD, at the precision the number deserves: sub-cent turns still read as spend. */
+export function formatCost(usd: number): string {
+  if (usd > 0 && usd < 0.01) return '<$0.01'
+  return `$${usd.toFixed(usd < 1 ? 3 : 2)}`
+}
+
+/** What a turn did, once it's done: files touched, tools run, time, cost. */
+function ReceiptView({ item }: { item: Extract<ChatItem, { kind: 'receipt' }> }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const parts = [
+    item.files.length
+      ? `${item.files.length} file${item.files.length === 1 ? '' : 's'} changed`
+      : 'no files changed',
+    `${item.toolCount} tool${item.toolCount === 1 ? '' : 's'}`,
+    formatDuration(item.durationMs)
+  ]
+  if (item.costUsd !== undefined) parts.push(formatCost(item.costUsd))
+
+  return (
+    <div className={`receipt ${item.stopReason}`}>
+      <button
+        className="receipt-header"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        disabled={!item.files.length}
+        title={item.files.length ? 'Show the files this turn changed' : undefined}
+      >
+        <span className="receipt-mark" aria-hidden>
+          {item.stopReason === 'done' ? '✓' : item.stopReason === 'cancelled' ? '⊘' : '!'}
+        </span>
+        <span className="receipt-parts">{parts.join(' · ')}</span>
+        {item.failedCount > 0 && (
+          <span className="receipt-fail">{item.failedCount} failed</span>
+        )}
+        {item.stopReason !== 'done' && <span className="receipt-stop">{stopLabel(item.stopReason)}</span>}
+        {item.files.length > 0 && <span className={`tool-chevron${open ? ' open' : ''}`}>›</span>}
+      </button>
+      {open && item.files.length > 0 && (
+        <div className="receipt-files">
+          {item.files.map((f) => (
+            <div key={`${f.kind}:${f.path}`} className="receipt-file">
+              <span className={`receipt-file-kind ${f.kind}`}>{f.kind === 'write' ? 'new' : 'edit'}</span>
+              <span className="receipt-file-path" title={f.path}>
+                {f.path}
+              </span>
+            </div>
+          ))}
+          <div className="receipt-tokens">
+            {fmtTokens(item.inputTokens)} in · {fmtTokens(item.outputTokens)} out ·{' '}
+            {fmtTokens(item.cachedTokens)} cached
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function stopLabel(reason: Extract<ChatItem, { kind: 'receipt' }>['stopReason']): string {
+  if (reason === 'cancelled') return 'stopped'
+  if (reason === 'max-turns') return 'hit turn limit'
+  return 'ended with an error'
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return String(n)
+}
 
 /** A rough emoji for a team role name, for the delegation label. */
 function roleEmoji(name: string): string {
