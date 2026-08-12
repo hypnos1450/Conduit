@@ -30,6 +30,14 @@ export interface BoundedLoopOptions {
    * writes and commands are order-sensitive and must stay sequential.
    */
   concurrent?: boolean
+  /**
+   * Pins this run's turns to one xAI cache server (`prompt_cache_key`). A
+   * delegated run re-sends its whole system prompt every turn, so without it
+   * the turns can scatter across servers and each one bills the prefix at the
+   * full input rate. Callers pass a key shared by sibling runs, which also lets
+   * fan-out siblings reuse each other's cached prefix.
+   */
+  cacheKey?: string
   signal: AbortSignal
   /** The model seam; defaults to the xAI adapter. Tests pass a scripted one. */
   stream?: StreamFn
@@ -74,6 +82,7 @@ export async function runBoundedLoop(opts: BoundedLoopOptions): Promise<BoundedR
       tools: opts.tools.map((t) => t.def),
       maxOutputTokens: opts.maxOutputTokens,
       temperature: opts.temperature,
+      cacheKey: opts.cacheKey,
       signal: opts.signal
     })
     messages.push({

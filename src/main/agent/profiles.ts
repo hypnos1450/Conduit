@@ -195,12 +195,13 @@ const GROK_43_ADDENDUM = `# Model guidance (Grok 4.3)
 - Your strength is grounded accuracy. Protect it: every factual claim about this codebase must trace to something you read or ran this session. When evidence conflicts with your prior assumptions, the evidence wins.
 - When debugging, reproduce the failure first, then reason from the observed error — not from what the code "should" do.`
 
-// ------------------------------------------------------------- Grok Build
-// "Grok Build" now runs Grok 4.5 (wire model grok-4.5) — xAI's default coding
-// model in Grok Build, 500K context with native reasoning. Tuned to: plan-first
-// workflow (matching how Grok Build CLI drives it), small focused diffs,
-// frequent cheap verification, and disciplined context hygiene.
-const GROK_BUILD_ADDENDUM = `# Model guidance (Grok Build — Grok 4.5)
+// ------------------------------------------------------- Grok coding models
+// Shared guidance for the Grok Build coding line (4.5 and 4.6): 500K context
+// with native reasoning. Tuned to: plan-first workflow (matching how Grok Build
+// CLI drives them), small focused diffs, frequent cheap verification, and
+// disciplined context hygiene. The label varies per model; the body is
+// identical, so both share the same cached prefix shape.
+const codingAddendum = (label: string): string => `# Model guidance (${label})
 - Not every message is a task. Questions, explanations, and discussion get a direct answer with no plan and no tool calls.
 - Work plan-first: before touching files on any multi-step task, write a numbered plan of the concrete edits and checks you will make. Then execute it step by step, adjusting as needed.
 - Prefer many small, verified steps over one big change: make a focused edit, run a quick check (typecheck, targeted test, or the command that exercises the change), then proceed.
@@ -310,7 +311,23 @@ export const PROFILES: Record<ModelId, ModelProfile> = {
     compactAt: 0.36,
     temperature: 0.1,
     maxTurns: 80,
-    systemPrompt: (opts) => assemble([HARNESS_CORE, GROK_BUILD_ADDENDUM], opts)
+    systemPrompt: (opts) => assemble([HARNESS_CORE, codingAddendum('Grok Build — Grok 4.5')], opts)
+  },
+  'grok-4.6': {
+    id: 'grok-4.6',
+    // xAI's current default coding model in Grok Build. Same 500K window and
+    // pricing tiers as 4.5, so the budgets below match grok-build-0.1. It is
+    // the only model that also accepts reasoning effort "xhigh" (see MODELS).
+    apiModel: 'grok-4.6',
+    supportsReasoningEffort: true,
+    contextWindow: 500_000,
+    maxOutputTokens: 65_536,
+    // 0.36 * 500K = 180K, just under xAI's 200K long_context_threshold — past
+    // it, input pricing doubles ($2.00 -> $4.00/M, cached $0.50 -> $1.00/M).
+    compactAt: 0.36,
+    temperature: 0.1,
+    maxTurns: 80,
+    systemPrompt: (opts) => assemble([HARNESS_CORE, codingAddendum('Grok 4.6')], opts)
   }
 }
 

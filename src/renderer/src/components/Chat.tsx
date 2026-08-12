@@ -1,4 +1,4 @@
-import { JSX, useCallback, useEffect, useRef, useState } from 'react'
+import { JSX, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChatItem,
   CheckpointInfo,
@@ -11,10 +11,13 @@ import {
   SessionMeta,
   Settings,
   Usage,
-  UserQuestion
+  UserQuestion,
+  effortForModel,
+  effortsFor
 } from '@shared/types'
-import ItemView, { DiffView } from './Items'
+import ItemView, { DiffView, ToolGroup } from './Items'
 import { shortPath } from '../lib/sessions'
+import { groupTranscript } from '../lib/transcript'
 import {
   BookIcon,
   BugIcon,
@@ -522,6 +525,74 @@ export default function Chat(props: {
 
   const modelInfo = MODELS.find((m) => m.id === model)
   const lastAssistantId = [...items].reverse().find((i) => i.kind === 'assistant')?.id
+  const rows = useMemo(() => groupTranscript(items), [items])
+
+  const renderItem = (item: ChatItem): JSX.Element => (
+    <div key={item.id} className="item-row">
+      {item.kind === 'user' && (
+        <div className="msg-actions">
+          {checkpoints.some((c) => c.itemId === item.id) && (
+            <button
+              className="msg-action"
+              title="Restore files to before this message"
+              onClick={() => restore(item.id)}
+            >
+              <UndoIcon size={14} />
+            </button>
+          )}
+          <button
+            className="msg-action"
+            title="Edit & resend"
+            disabled={running}
+            onClick={() => setEditing({ id: item.id, text: item.text })}
+          >
+            <PencilIcon size={14} />
+          </button>
+          <button className="msg-action" title="Fork session from here" onClick={() => fork(item.id)}>
+            <ForkIcon size={14} />
+          </button>
+        </div>
+      )}
+      {editing?.id === item.id ? (
+        <div className="edit-box">
+          <textarea
+            value={editing.text}
+            autoFocus
+            onChange={(e) => setEditing({ id: item.id, text: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                submitEdit()
+              }
+              if (e.key === 'Escape') setEditing(null)
+            }}
+          />
+          <div className="edit-actions">
+            <button className="btn primary" onClick={submitEdit}>
+              Resend
+            </button>
+            <button className="btn" onClick={() => setEditing(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <ItemView
+          item={item}
+          sessionId={session.id}
+          onPinnedToTerm={() => {
+            // Ask App to open the terminal dock via menu action channel.
+            window.dispatchEvent(new CustomEvent('harness:open-terminal'))
+          }}
+        />
+      )}
+      {item.kind === 'assistant' && item.id === lastAssistantId && !running && (
+        <button className="retry-link" onClick={retry}>
+          <RefreshIcon size={13} /> Regenerate
+        </button>
+      )}
+    </div>
+  )
 
   return (
     <>
@@ -618,68 +689,21 @@ export default function Chat(props: {
           </div>
         ) : (
           <div className="message-column">
-            {items.map((item) => (
-              <div key={item.id} className="item-row">
-                {item.kind === 'user' && (
-                  <div className="msg-actions">
-                    {checkpoints.some((c) => c.itemId === item.id) && (
-                      <button className="msg-action" title="Restore files to before this message" onClick={() => restore(item.id)}>
-                        <UndoIcon size={14} />
-                      </button>
-                    )}
-                    <button
-                      className="msg-action"
-                      title="Edit & resend"
-                      disabled={running}
-                      onClick={() => setEditing({ id: item.id, text: item.text })}
-                    >
-                      <PencilIcon size={14} />
-                    </button>
-                    <button className="msg-action" title="Fork session from here" onClick={() => fork(item.id)}>
-                      <ForkIcon size={14} />
-                    </button>
-                  </div>
-                )}
-                {editing?.id === item.id ? (
-                  <div className="edit-box">
-                    <textarea
-                      value={editing.text}
-                      autoFocus
-                      onChange={(e) => setEditing({ id: item.id, text: e.target.value })}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault()
-                          submitEdit()
-                        }
-                        if (e.key === 'Escape') setEditing(null)
-                      }}
-                    />
-                    <div className="edit-actions">
-                      <button className="btn primary" onClick={submitEdit}>
-                        Resend
-                      </button>
-                      <button className="btn" onClick={() => setEditing(null)}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <ItemView
-                  item={item}
-                  sessionId={session.id}
-                  onPinnedToTerm={() => {
-                    // Ask App to open the terminal dock via menu action channel.
-                    window.dispatchEvent(new CustomEvent('harness:open-terminal'))
-                  }}
-                />
-                )}
-                {item.kind === 'assistant' && item.id === lastAssistantId && !running && (
-                  <button className="retry-link" onClick={retry}>
-                    <RefreshIcon size={13} /> Regenerate
-                  </button>
-                )}
-              </div>
-            ))}
+            {rows.map((row) =>
+              row.kind === 'tool-group' ? (
+                <div key={row.id} className="item-row">
+                  <ToolGroup
+                    items={row.items}
+                    sessionId={session.id}
+                    onPinnedToTerm={() =>
+                      window.dispatchEvent(new CustomEvent('harness:open-terminal'))
+                    }
+                  />
+                </div>
+              ) : (
+                renderItem(row.item)
+              )
+            )}
             {running && !permission && (
               <div className="working-indicator">
                 <span className="working-dots">
@@ -693,7 +717,6 @@ export default function Chat(props: {
           </div>
         )}
       </div>
-
       {notice && (
         <div className={`notice-bar ${notice.level}`}>
           <span>{notice.message}</span>
@@ -955,10 +978,10 @@ export default function Chat(props: {
                 ))}
               </select>
             </span>
-            {MODELS.find((m) => m.id === model)?.effort && (
-              <span className="composer-chip" title="Reasoning depth (Grok 4.5)">
+            {effortsFor(model).length > 0 && (
+              <span className="composer-chip" title="Reasoning depth">
                 <select
-                  value={effort}
+                  value={effortForModel(model, effort || undefined) ?? ''}
                   onChange={(e) => {
                     const v = e.target.value as ReasoningEffort | ''
                     setEffort(v)
@@ -966,9 +989,11 @@ export default function Chat(props: {
                   }}
                 >
                   <option value="">reasoning: default</option>
-                  <option value="low">reasoning: low</option>
-                  <option value="medium">reasoning: medium</option>
-                  <option value="high">reasoning: high</option>
+                  {effortsFor(model).map((v) => (
+                    <option key={v} value={v}>
+                      reasoning: {v}
+                    </option>
+                  ))}
                 </select>
               </span>
             )}

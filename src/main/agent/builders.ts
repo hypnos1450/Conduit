@@ -114,8 +114,14 @@ type BuildResult =
 
 /** One write-capable builder in its worktree — autonomous, no permission gate
  *  (the worktree is the sandbox). Returns its own summary of what it changed. */
-async function runBuilder(task: string, cwd: string, persona: Persona, signal: AbortSignal): Promise<string> {
-  const profile = profileFor(persona.model === 'grok-4.3' ? 'grok-4.3' : 'grok-build-0.1')
+async function runBuilder(
+  task: string,
+  cwd: string,
+  persona: Persona,
+  signal: AbortSignal,
+  cacheKey: string
+): Promise<string> {
+  const profile = profileFor(persona.model)
   // Lazy to keep the tools.ts ↔ builders.ts cycle out of module-eval time.
   const { builderTools } = await import('./tools')
   const tools = builderTools()
@@ -136,6 +142,9 @@ async function runBuilder(task: string, cwd: string, persona: Persona, signal: A
     temperature: profile.temperature,
     maxOutputTokens: 8000,
     maxTurns: BUILDER_MAX_TURNS,
+    // Siblings share this key: their prompts diverge only in the trailing
+    // worktree path, so everything before it stays cached on one server.
+    cacheKey,
     signal
   })
   if (run.outcome === 'cancelled') return '(builder cancelled)'
@@ -197,6 +206,9 @@ export const delegateBuildTool: Tool = {
 
     const p: Persona = { name: persona.name, instructions: persona.instructions, model: persona.model }
 
+    // Scoped to the persona: a different role means a different system prompt,
+    // so there is no prefix for the other roles' builders to reuse.
+    const cacheKey = `${ctx.sessionId}:build:${p.name}`
     // Run every build in its own worktree, in parallel.
     const builds: BuildResult[] = await Promise.all(
       tasks.map(async (task): Promise<BuildResult> => {
@@ -208,7 +220,7 @@ export const delegateBuildTool: Tool = {
           return { task, error: err instanceof Error ? err.message : String(err) }
         }
         try {
-          const summary = await runBuilder(task, wt.path, p, ctx.signal)
+          const summary = await runBuilder(task, wt.path, p, ctx.signal, cacheKey)
           const diff = await worktreeDiff(wt)
           return { task, summary, diff }
         } catch (err) {

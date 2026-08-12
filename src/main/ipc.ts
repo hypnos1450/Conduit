@@ -7,10 +7,12 @@ import {
   AgentEvent,
   Attachments,
   DEFAULT_SETTINGS,
+  MODELS,
   ModelId,
   PermissionRequest,
   ReasoningEffort,
-  Settings
+  Settings,
+  effortForModel
 } from '@shared/types'
 import { authManager } from './auth/store'
 import { probeAccess } from './agent/provider'
@@ -110,6 +112,11 @@ function saveSettings(s: Settings): void {
   } catch {
     // If secure storage is down, public settings still save; env is lost until re-entered.
   }
+}
+
+/** Renderer-supplied model ids are untrusted; only the shipped menu is valid. */
+function isModelId(v: unknown): v is ModelId {
+  return typeof v === 'string' && MODELS.some((m) => m.id === v)
 }
 
 /** Settings returned to the renderer — MCP env values redacted. */
@@ -218,8 +225,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         throw new Error(err instanceof Error ? err.message : 'Invalid working directory', { cause: err })
       }
     }
-    const model =
-      opts?.model === 'grok-4.3' || opts?.model === 'grok-build-0.1' ? opts.model : undefined
+    const model = isModelId(opts?.model) ? opts.model : undefined
     const rec = sessionStore.create({ cwd, model, defaultModel: settings.defaultModel })
     return rec.meta
   })
@@ -295,7 +301,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   })
   handle('sessions:setModel', async (_e, sessionId: string, model: ModelId) => {
     assertId(sessionId, 'sessionId')
-    if (model !== 'grok-4.3' && model !== 'grok-build-0.1') throw new Error('Invalid model')
+    if (!isModelId(model)) throw new Error('Invalid model')
     const rec = await sessionStore.load(sessionId)
     if (rec) {
       rec.meta.model = model
@@ -343,8 +349,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     assertId(sessionId, 'sessionId')
     const rec = await sessionStore.load(sessionId)
     if (rec) {
-      rec.meta.reasoningEffort =
-        effort === 'low' || effort === 'medium' || effort === 'high' ? effort : undefined
+      // Scoped to the session's model, so a renderer can't park xhigh on a
+      // model that would reject it.
+      rec.meta.reasoningEffort = effortForModel(rec.meta.model, effort ?? undefined)
       await sessionStore.save(rec)
     }
   })

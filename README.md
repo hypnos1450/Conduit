@@ -1,10 +1,12 @@
 # Conduit
 
-A cross-platform desktop agent harness for xAI's **Grok 4.5** and **Grok 4.3** models, in the spirit of Claude Desktop / Codex Desktop. Sign in with your **SuperGrok or X Premium+ subscription** (OAuth) — no API key required — and put Grok to work on real projects: it reads, edits, and runs code on your machine with a permissioned tool loop.
+A cross-platform desktop agent harness for xAI's **Grok 4.6**, **Grok 4.5** and **Grok 4.3** models, in the spirit of Claude Desktop / Codex Desktop. Sign in with your **SuperGrok or X Premium+ subscription** (OAuth) — no API key required — and put Grok to work on real projects: it reads, edits, and runs code on your machine with a permissioned tool loop.
 
 ## Models
 
-- **Grok Build → Grok 4.5** — xAI's default agentic coding model (500K context, native reasoning, vision). The harness sends `grok-4.5` on the wire; a per-session **reasoning effort** control (default/low/medium/high) sits next to the model picker.
+- **Grok 4.6** — xAI's current default agentic coding model (500K context, native reasoning, vision), sent as `grok-4.6` on the wire.
+- **Grok Build → Grok 4.5** — the previous agentic coding model (500K context). The harness sends `grok-4.5` on the wire.
+- Both take a per-session **reasoning effort** control next to the model picker (default/low/medium/high, plus **xhigh** on 4.6). 4.6 is the default model for new sessions.
 - **Grok 4.3** — flagship reasoning model (1M context) for the hardest planning and debugging work.
 - Every assistant reply shows a badge with the model **the xAI API reports it actually served** — not just what the menu says. The same is logged by the provider (`Settings → About → Reveal logs`).
 
@@ -12,9 +14,9 @@ A cross-platform desktop agent harness for xAI's **Grok 4.5** and **Grok 4.3** m
 
 - **xAI subscription OAuth** — the same public desktop OAuth client + PKCE loopback flow the Grok CLI uses (`auth.x.ai`). Tokens are encrypted at rest with the OS keychain (Electron `safeStorage`) and refreshed automatically. API-key sign-in is available as a fallback.
 - **Grok-tuned agent loop** — per-model profiles in `src/main/agent/profiles.ts`:
-  - *Grok Build / Grok 4.5* (500K context): plan-first workflow, small verified diffs, context-hygiene rules; background calls (session titles, self-review) automatically run at **low** reasoning effort so your quota goes to real work.
+  - *Grok 4.6 / Grok 4.5* (500K context): plan-first workflow, small verified diffs, context-hygiene rules; background calls (session titles, self-review) automatically run at **low** reasoning effort so your quota goes to real work.
   - *Grok 4.3* (1M context): read-generously strategy, private-reasoning guidance, evidence-required claims to preserve its low-hallucination behavior.
-- **Prompt-cache discipline** — stable system-prompt prefix and append-only message history, so xAI's cached-input pricing hits on every agentic turn.
+- **Prompt-cache discipline** — stable system-prompt prefix and append-only message history, so xAI's cached-input pricing hits on every agentic turn. Each conversation pins its requests to one cache server (`prompt_cache_key`); delegated subagent and builder fan-outs share a key per persona, so siblings reuse each other's cached prefix.
 - **Tools** — `bash`, `read_file`, `apply_patch`, `write_file`, `list_dir`, `glob`, `grep`, `diagnostics`, `lsp`, `lsp_edit`, `docs`, `monitor`, `fetch_page`, `update_plan`, `ask_user` (plus `spawn_agent`, and in team projects `team_task` / `project_brief` / `delegate_build`). Read-only tools run in parallel; mutations and commands are permission-gated (`ask` / `auto-edit` / `full-auto`) with per-session and global "always allow" plus allowlist learning.
 - **`apply_patch` as the primary editor** — Grok edits with Codex-style patches (`*** Begin Patch` … add/update/delete/rename, `@@` hunks), the format the Grok models are tuned to produce. One call can touch several files; a bad hunk aborts the whole patch before anything is written. `write_file` (full rewrite) remains for new/heavily-rewritten files.
 - **Code intelligence (LSP)** — `lsp` starts a real language server on demand (TypeScript/JS, Python, Go, Rust, C/C++ when one is installed) for **per-file diagnostics in milliseconds**, go-to-definition, find-references (resolves imports/scoping — more precise than grep), hover signatures, and file symbols. `lsp_edit` then applies **server-computed changes**: `rename` updates a symbol across every file that uses it as one atomic, semantics-aware edit (it will even alias an import rather than break it) — far safer than find/replace — and `fix` lists and applies the quick-fixes the server offers for a diagnostic (add missing import, remove unused, …). Every edit is jailed to the workspace, refused entirely if it would reach outside, snapshotted for rewind, and shown as a diff in the Review panel. `diagnostics` runs the project's own type-checker/linter; `monitor` runs a long command and watches until a regex/log line appears or it exits. Together these give Grok a tight edit → verify loop.

@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { highlight } from '../lib/highlight'
 import { ChatItem } from '@shared/types'
+import { ToolItem, summarizeGroup } from '../lib/transcript'
 
 /** Fenced code block with highlight.js. Falls back to plain text on failure. */
 function CodeBlock({ className, children }: { className?: string; children?: unknown }): JSX.Element {
@@ -206,7 +207,9 @@ function ToolCard({
       ? String(item.input.agent).trim()
       : null
   const roleTasks = role && Array.isArray(item.input?.tasks) ? (item.input.tasks as unknown[]).map(String) : []
-  const summary = role ? roleTasks.join(' · ') : summarize(item)
+  // Prefer the summary the tool authored: it covers every tool (including MCP
+  // ones) and is the same text the permission prompt showed for this call.
+  const summary = role ? roleTasks.join(' · ') : (item.summary ?? summarize(item))
   const displayName = role
     ? `${roleEmoji(role)} ${role}`
     : item.name.startsWith('mcp__')
@@ -294,6 +297,72 @@ function ToolCard({
   )
 }
 
+/**
+ * A run of consecutive tool calls behind one header. Collapsed by default —
+ * the header keeps the run legible (what ran, how many, what failed, what is
+ * running right now) so folding them away never hides that work happened.
+ */
+function ToolGroupView({
+  items,
+  sessionId,
+  onPinnedToTerm
+}: {
+  items: ToolItem[]
+  sessionId?: string
+  onPinnedToTerm?: () => void
+}): JSX.Element {
+  const { total, failed, running, names, durationMs } = summarizeGroup(items)
+  // A failure is the reason you would open this, so open on one — including a
+  // failure that lands while the run is still streaming. null means "nobody has
+  // decided yet"; once the user clicks, their choice wins for good.
+  const [override, setOverride] = useState<boolean | null>(null)
+  const open = override ?? failed > 0
+
+  const label = running
+    ? `${running.name} · ${running.summary ?? summarize(running)}`
+    : names.slice(0, 3).join(', ') + (names.length > 3 ? `, +${names.length - 3} more` : '')
+
+  return (
+    <div className={`tool-group${failed > 0 ? ' has-error' : ''}${running ? ' running' : ''}`}>
+      <button
+        className="tool-group-header"
+        onClick={() => setOverride(!open)}
+        aria-expanded={open}
+        title={open ? 'Collapse tool calls' : 'Expand tool calls'}
+      >
+        <span className="tool-group-glyphs" aria-hidden>
+          {names.slice(0, 3).map((n) => (
+            <span key={n}>{toolIcon(n)}</span>
+          ))}
+        </span>
+        <span className="tool-group-count">
+          {total} tool call{total === 1 ? '' : 's'}
+        </span>
+        <span className="tool-group-label">{label}</span>
+        {failed > 0 && (
+          <span className="tool-group-fail" title={`${failed} did not succeed`}>
+            {failed} failed
+          </span>
+        )}
+        {running && <span className="tool-group-live" aria-label="running" />}
+        {!running && durationMs !== null && (
+          <span className="tool-duration">{formatDuration(durationMs)}</span>
+        )}
+        <span className={`tool-chevron${open ? ' open' : ''}`}>›</span>
+      </button>
+      {open && (
+        <div className="tool-group-body">
+          {items.map((t) => (
+            <ToolCard key={t.id} item={t} sessionId={sessionId} onPinnedToTerm={onPinnedToTerm} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export const ToolGroup = memo(ToolGroupView)
+
 /** A rough emoji for a team role name, for the delegation label. */
 function roleEmoji(name: string): string {
   const n = name.toLowerCase()
@@ -308,9 +377,10 @@ function roleEmoji(name: string): string {
 }
 
 /**
- * What the tool card shows under the tool name. Tools author their own summary
- * (ChatItem.summary), so the switch below is only the fallback for items saved
- * before that field existed.
+ * Fallback summary for items saved before tools authored their own
+ * (ChatItem.summary). Live calls never reach this — the card and the group
+ * header both prefer the stored summary, so this only rebuilds a legible line
+ * for old transcripts, and only for the tools it has a case for.
  */
 export function summarize(item: Extract<ChatItem, { kind: 'tool' }>): string {
   const input = item.input

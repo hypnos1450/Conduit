@@ -18,7 +18,8 @@ import {
   PermissionMode,
   PermissionRequest,
   Settings,
-  TeamState
+  TeamState,
+  effortForModel
 } from '@shared/types'
 import {
   ApiMessage,
@@ -257,8 +258,10 @@ export class AgentRun {
           serverTools: this.settings.enableWebSearch,
           maxOutputTokens: profile.maxOutputTokens,
           temperature: profile.temperature,
+          // Clamped to the model: a session carried over from 4.6 may hold
+          // xhigh, which the other models don't accept.
           reasoningEffort: profile.supportsReasoningEffort
-            ? this.session.meta.reasoningEffort
+            ? effortForModel(profile.id, this.session.meta.reasoningEffort)
             : undefined,
           // Every turn in a session shares the same system-prompt prefix; pin
           // them to one cache server so that prefix bills at the cached rate.

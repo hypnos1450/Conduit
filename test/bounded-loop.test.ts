@@ -150,6 +150,20 @@ describe('runBoundedLoop', () => {
     expect(stream.calls).toBe(3)
   })
 
+  it('sends the cache key on every turn, so a run stays on one cache server', async () => {
+    const keys: (string | undefined)[] = []
+    const stream: StreamFn = async (opts) => {
+      keys.push(opts.cacheKey)
+      return opts.messages.some((m) => m.role === 'tool')
+        ? reply({ content: 'ok' })
+        : reply({ toolCalls: [call('c', 'noop')] })
+    }
+    const noop = tool('noop', async () => ({ ok: true, output: 'x' }))
+
+    await runBoundedLoop({ ...base, tools: [noop], cacheKey: 'sess:sub:', stream })
+    expect(keys).toEqual(['sess:sub:', 'sess:sub:'])
+  })
+
   it('reports cancellation before spending a model call', async () => {
     const ac = new AbortController()
     ac.abort()

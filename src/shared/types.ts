@@ -1,19 +1,46 @@
 import type { AppAction, MenuMessage } from './channels'
 // Shared types across main, preload, and renderer.
 
-export type ModelId = 'grok-4.3' | 'grok-build-0.1'
+export type ModelId = 'grok-4.3' | 'grok-build-0.1' | 'grok-4.6'
 
-export const MODELS: { id: ModelId; label: string; blurb: string; effort?: boolean }[] = [
+/**
+ * `efforts` lists the reasoning depths the model accepts, in menu order; an
+ * empty/absent list hides the reasoning control. Only 4.6 offers xhigh.
+ */
+export const MODELS: { id: ModelId; label: string; blurb: string; efforts?: ReasoningEffort[] }[] = [
+  {
+    id: 'grok-4.6',
+    label: 'Grok 4.6',
+    blurb: 'Agentic coding · 500K context',
+    efforts: ['low', 'medium', 'high', 'xhigh']
+  },
   {
     // id stays grok-build-0.1 so saved sessions keep resolving to this profile;
     // it runs grok-4.5 on the wire (see PROFILES).
     id: 'grok-build-0.1',
     label: 'Grok 4.5',
     blurb: 'Agentic coding · 500K context',
-    effort: true
+    efforts: ['low', 'medium', 'high']
   },
   { id: 'grok-4.3', label: 'Grok 4.3', blurb: 'Flagship reasoning · 1M context' }
 ]
+
+/** Reasoning depths the model accepts ([] = the control is hidden). */
+export function effortsFor(model: ModelId): ReasoningEffort[] {
+  return MODELS.find((m) => m.id === model)?.efforts ?? []
+}
+
+/**
+ * Drop an effort the model doesn't accept. Sessions persist their effort, so
+ * switching a session from 4.6 (xhigh) to another model must not keep sending
+ * a value that model would reject; undefined means "the API default".
+ */
+export function effortForModel(
+  model: ModelId,
+  effort: ReasoningEffort | undefined
+): ReasoningEffort | undefined {
+  return effort && effortsFor(model).includes(effort) ? effort : undefined
+}
 
 export type PermissionMode = 'ask' | 'auto-edit' | 'full-auto' | 'plan-only'
 
@@ -189,7 +216,7 @@ export interface McpInstallResult {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  defaultModel: 'grok-build-0.1',
+  defaultModel: 'grok-4.6',
   permissionMode: 'ask',
   theme: 'dark',
   customInstructions: '',
@@ -245,7 +272,7 @@ export const AGENT_PROFILES: {
 /** Current on-disk schema version for sessions and settings. */
 export const SCHEMA_VERSION = 1
 
-export type ReasoningEffort = 'low' | 'medium' | 'high'
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh'
 
 export interface SessionMeta {
   id: string

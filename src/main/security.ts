@@ -115,7 +115,7 @@ export function assertExistingDir(dir: string): string {
 
 // ---------------------------------------------------------------- settings
 
-const MODELS = new Set<ModelId>(['grok-4.3', 'grok-build-0.1'])
+const MODELS = new Set<ModelId>(['grok-4.3', 'grok-build-0.1', 'grok-4.6'])
 const PERMISSION_MODES = new Set<PermissionMode>(['ask', 'auto-edit', 'full-auto', 'plan-only'])
 const THEMES = new Set(['dark', 'light', 'system'])
 const PROFILES = new Set<AgentProfileId>(['careful', 'balanced', 'yolo'])
@@ -482,15 +482,37 @@ export function bashAllowKey(command: string): string | null {
   return `bash:${first}`
 }
 
-/** Path-scoped allow key for write tools, e.g. write_file:@src/foo.ts */
-export function writeAllowKey(toolName: string, absPath: string, cwd: string): string {
+/** Resolve symlinks when the path exists; otherwise use it as given. */
+function realOrSelf(p: string): string {
+  const abs = path.resolve(p)
+  try {
+    return fs.realpathSync(abs)
+  } catch {
+    return abs
+  }
+}
+
+/**
+ * Path-scoped allow key for write tools, e.g. write_file:@src/foo.ts
+ *
+ * `null` when the path cannot be expressed inside the workspace. There is no
+ * basename fallback: `write_file:@index.ts` would grant every index.ts in the
+ * tree from one approval, which is the exact over-broad grant this scoping
+ * exists to prevent. Refusing the key just means the user is asked again.
+ *
+ * Both sides are resolved through realpath first. `resolveInWorkspace` hands
+ * back a realpath'd absolute path, so relativizing it against a cwd that still
+ * contains a symlinked ancestor (macOS `/var`, a symlinked home) produced a
+ * `../..` escape and silently fell back to the basename.
+ */
+export function writeAllowKey(toolName: string, absPath: string, cwd: string): string | null {
   let rel: string
   try {
-    rel = path.relative(path.resolve(cwd), path.resolve(absPath)).replace(/\\/g, '/')
+    rel = path.relative(realOrSelf(cwd), realOrSelf(absPath)).replace(/\\/g, '/')
   } catch {
-    rel = absPath
+    return null
   }
-  if (!rel || rel.startsWith('..')) rel = path.basename(absPath)
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null
   return `${toolName}:@${rel.slice(0, 180)}`
 }
 
@@ -524,11 +546,16 @@ export function toolAllowKeys(
   if (!targets?.length) return null
   const keys: string[] = []
   for (const rel of targets) {
+    let key: string | null
     try {
-      keys.push(writeAllowKey(tool.name, resolveInWorkspace(cwd, rel), cwd))
+      key = writeAllowKey(tool.name, resolveInWorkspace(cwd, rel), cwd)
     } catch {
       return null // outside the workspace — always re-prompt (and the tool will fail)
     }
+    // A target we cannot scope to a path taints the whole call: allowlisting
+    // the rest would let a later call skip the prompt for this one.
+    if (!key) return null
+    keys.push(key)
   }
   return keys
 }
