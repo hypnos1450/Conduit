@@ -35,7 +35,7 @@
     "highlight.js": "^11.11.1",
     "node-pty": "^1.1.0",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7",
+    "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.0"
   },
@@ -45,7 +45,7 @@
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.2.0",
     "electron": "^43.1.1",
     "electron-builder": "^26.15.3",
